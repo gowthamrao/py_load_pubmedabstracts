@@ -64,3 +64,23 @@ class DatabaseAdapter(ABC):
     def get_completed_files(self) -> List[str]:
         """Gets a list of successfully processed file names from the history table."""
         raise NotImplementedError
+
+    @abstractmethod
+    def reset_failed_files(self) -> int:
+        """
+        Resets the status of any 'FAILED' files to 'PENDING' for reprocessing.
+
+        Returns:
+            The number of files that were reset.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def has_completed_baseline(self) -> bool:
+        """
+        Checks if at least one baseline file has been successfully loaded.
+
+        Returns:
+            True if a baseline load is complete, False otherwise.
+        """
+        raise NotImplementedError
