@@ -120,6 +120,11 @@ def download_file(
         raise typer.Exit(code=1)
 
 
+import json
+
+from .parser import parse_pubmed_xml
+
+
 @app.command()
 def check_status() -> None:
     """
@@ -129,6 +134,69 @@ def check_status() -> None:
     console.print(f"Checking status for adapter {settings.db_adapter}...")
     # This will be implemented later
     console.print("Status check complete.")
+
+
+@app.command()
+def run_baseline(
+    input_file: str = typer.Argument(
+        ..., help="Path to a local .xml.gz file to process."
+    ),
+    chunk_size: int = typer.Option(
+        20000, help="Number of records to process in each chunk."
+    ),
+) -> None:
+    """
+    (Simplified) Runs a baseline load from a single local file into a staging table.
+    """
+    settings = Settings()
+    console.print(f"Starting baseline load for file: {input_file}")
+    console.print(f"Using adapter: {settings.db_adapter}, Mode: {settings.load_mode}")
+
+    if settings.db_adapter != "postgresql":
+        console.print(f"[bold red]Error: This command currently only supports the 'postgresql' adapter.[/bold red]")
+        raise typer.Exit(code=1)
+
+    try:
+        # 1. Initialize the adapter
+        adapter = PostgresAdapter(dsn=settings.db_connection_string)
+
+        # 2. Create staging tables
+        console.print("Creating staging tables...")
+        adapter.create_staging_tables()
+        console.print("[green]Staging tables created successfully.[/green]")
+
+        # 3. Parse XML and load data in chunks
+        total_records_processed = 0
+        parser_gen = parse_pubmed_xml(input_file, chunk_size=chunk_size)
+
+        for i, chunk in enumerate(parser_gen):
+            console.print(f"Processing chunk {i + 1} with {len(chunk)} records...")
+
+            # Convert 'data' dict to JSON string for loading
+            for record in chunk:
+                record["data"] = json.dumps(record["data"])
+
+            adapter.bulk_load_chunk(
+                data_chunk=iter(chunk), target_table="_staging_citations_json"
+            )
+            total_records_processed += len(chunk)
+            console.print(f"Chunk {i + 1} loaded successfully.")
+
+        console.print(
+            f"\n[bold green]Baseline load from file completed.[/bold green]"
+        )
+        console.print(f"Total records processed: {total_records_processed}")
+        console.print(
+            "[yellow]Note: Data is in staging table `_staging_citations_json`. "
+            "Merge strategy has not been implemented yet.[/yellow]"
+        )
+
+    except FileNotFoundError:
+        console.print(f"[bold red]Error: Input file not found at '{input_file}'[/bold red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[bold red]An error occurred during the baseline run: {e}[/bold red]")
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

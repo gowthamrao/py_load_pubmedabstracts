@@ -33,6 +33,11 @@ py-load-pubmedabstracts = "py_load_pubmedabstracts.cli:app"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration tests (requires docker)",
+]
+
 # Ruff configuration
 [tool.ruff]
 line-length = 88
