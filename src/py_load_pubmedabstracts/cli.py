@@ -1,30 +1,38 @@
+import logging
 import os
 from typing import Optional
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
 from .config import Settings
 from .db.factory import get_adapter
 from .ftp_client import NLMFTPClient
+from .logging_config import configure_logging
 from .parser import parse_pubmed_xml
 
 app = typer.Typer()
-console = Console()
+logger = logging.getLogger(__name__)
+
+
+@app.callback()
+def main():
+    """
+    Configure logging for all commands.
+    """
+    configure_logging()
 
 
 @app.command()
 def initialize_db() -> None:
     """Initializes the database schema and state tracking tables."""
     settings = Settings()
-    console.print(f"Initializing database for mode: [bold]{settings.load_mode}[/bold]...")
+    logger.info("Initializing database.", extra={"mode": settings.load_mode})
     try:
         adapter = get_adapter(settings.db_adapter, settings.db_connection_string)
         adapter.initialize_schema(mode=settings.load_mode)
-        console.print("[bold green]Database initialized successfully.[/bold green]")
+        logger.info("Database initialized successfully.")
     except Exception as e:
-        console.print(f"[bold red]Error initializing database: {e}[/bold red]")
+        logger.exception("Error initializing database.", exc_info=e)
         raise typer.Exit(code=1)
 
 
@@ -35,60 +43,37 @@ def list_remote_files(
 ) -> None:
     """Lists available baseline and/or daily update files from the NLM FTP server."""
     client = NLMFTPClient()
-    # ... (rest of the function is unchanged)
-    console.print("Connecting to NLM FTP server to list files...")
+    logger.info("Connecting to NLM FTP server to list files...")
     try:
         if baseline:
-            console.print("\n[bold cyan]Baseline Files:[/bold cyan]")
             baseline_files = client.list_baseline_files()
-            table = Table("Data File", "Checksum File")
-            if len(baseline_files) > 10:
-                display_files = baseline_files[:5] + baseline_files[-5:]
-                for data_file, checksum_file in display_files:
-                    table.add_row(data_file, checksum_file)
-                console.print(table)
-                console.print(f"... and {len(baseline_files) - 10} more files.")
-            else:
-                for data_file, checksum_file in baseline_files:
-                    table.add_row(data_file, checksum_file)
-                console.print(table)
+            logger.info("Available baseline files.", extra={"count": len(baseline_files), "files": baseline_files})
         if updates:
-            console.print("\n[bold cyan]Update Files:[/bold cyan]")
             update_files = client.list_update_files()
-            table = Table("Data File", "Checksum File")
-            if len(update_files) > 10:
-                display_files = update_files[:5] + update_files[-5:]
-                for data_file, checksum_file in display_files:
-                    table.add_row(data_file, checksum_file)
-                console.print(table)
-                console.print(f"... and {len(update_files) - 10} more files.")
-            else:
-                for data_file, checksum_file in update_files:
-                    table.add_row(data_file, checksum_file)
-                console.print(table)
-        console.print("\n[bold green]Successfully retrieved file lists.[/bold green]")
+            logger.info("Available update files.", extra={"count": len(update_files), "files": update_files})
+        logger.info("Successfully retrieved file lists.")
     except Exception as e:
-        console.print(f"[bold red]Error listing remote files: {e}[/bold red]")
+        logger.exception("Error listing remote files.", exc_info=e)
         raise typer.Exit(code=1)
+
 
 @app.command()
 def check_status() -> None:
     """Displays the current state of the loaded files from the load history table."""
     settings = Settings()
-    console.print(f"Checking status using adapter '{settings.db_adapter}'...")
+    logger.info("Checking load status.", extra={"adapter": settings.db_adapter})
     try:
         adapter = get_adapter(settings.db_adapter, settings.db_connection_string)
-        # This method is defined in the base adapter to return List[str]
         completed_files = adapter.get_completed_files()
-        table = Table("Completed File Name")
         if not completed_files:
-            table.add_row("[italic]No files have been successfully processed yet.[/italic]")
+            logger.info("No files have been successfully processed yet.")
         else:
-            for file_name in completed_files:
-                table.add_row(file_name)
-        console.print(table)
+            logger.info(
+                "Found completed files.",
+                extra={"count": len(completed_files), "files": completed_files},
+            )
     except Exception as e:
-        console.print(f"[bold red]Error checking status: {e}[/bold red]")
+        logger.exception("Error checking status.", exc_info=e)
         raise typer.Exit(code=1)
 
 
@@ -96,26 +81,26 @@ def check_status() -> None:
 def reset_failed() -> None:
     """Resets the status of FAILED files in the state table for reprocessing."""
     settings = Settings()
-    console.print("Connecting to the database to reset failed files...")
+    logger.info("Connecting to the database to reset failed files...")
     try:
         adapter = get_adapter(settings.db_adapter, settings.db_connection_string)
         num_reset = adapter.reset_failed_files()
         if num_reset > 0:
-            console.print(f"[bold yellow]Reset status for {num_reset} failed file(s) to 'PENDING'.[/bold yellow]")
+            logger.warning(f"Reset status for {num_reset} failed file(s) to 'PENDING'.")
         else:
-            console.print("[bold green]No failed files found to reset.[/bold green]")
+            logger.info("No failed files found to reset.")
     except Exception as e:
-        console.print(f"[bold red]Error resetting failed files: {e}[/bold red]")
+        logger.exception("Error resetting failed files.", exc_info=e)
         raise typer.Exit(code=1)
 
 
 def _get_files_to_process(client: NLMFTPClient, adapter, file_type: str) -> list:
     """Helper to get the list of files that need to be processed."""
-    console.print(f"Fetching remote {file_type} file list...")
+    logger.info(f"Fetching remote {file_type} file list...")
     list_func = client.list_baseline_files if file_type == "baseline" else client.list_update_files
     remote_files = list_func()
 
-    console.print("Fetching list of completed files from the database...")
+    logger.info("Fetching list of completed files from the database...")
     completed_files = set(adapter.get_completed_files())
 
     files_to_process = sorted(
@@ -132,9 +117,7 @@ def run_baseline(
 ) -> None:
     """Runs the full baseline load process."""
     settings = Settings()
-    console.print(f"Starting baseline load for mode: [bold]{settings.load_mode}[/bold]")
-    if initial_load:
-        console.print("[yellow]--initial-load flag set: will optimize DB.[/yellow]")
+    logger.info("Starting baseline load.", extra={"mode": settings.load_mode, "initial_load": initial_load})
 
     adapter = get_adapter(settings.db_adapter, settings.db_connection_string)
     client = NLMFTPClient()
@@ -142,13 +125,13 @@ def run_baseline(
     try:
         files_to_process = _get_files_to_process(client, adapter, "baseline")
         if not files_to_process:
-            console.print("[bold green]No new baseline files to process.[/bold green]")
+            logger.info("No new baseline files to process.")
             return
 
-        console.print(f"Found {len(files_to_process)} new baseline files.")
+        logger.info(f"Found {len(files_to_process)} new baseline files to process.")
         if limit:
             files_to_process = files_to_process[:limit]
-            console.print(f"Processing a maximum of {limit} file(s).")
+            logger.info(f"Processing a maximum of {limit} file(s).")
 
         if initial_load:
             adapter.optimize_database(stage="pre-load", mode=settings.load_mode)
@@ -167,9 +150,9 @@ def run_baseline(
         if initial_load:
             adapter.optimize_database(stage="post-load", mode=settings.load_mode)
 
-        console.rule("[bold green]Baseline run finished.[/bold green]")
+        logger.info("Baseline run finished.")
     except Exception as e:
-        console.print(f"[bold red]Critical error during baseline run: {e}[/bold red]")
+        logger.exception("Critical error during baseline run.", exc_info=e)
         raise typer.Exit(code=1)
 
 
@@ -180,25 +163,25 @@ def run_delta(
 ) -> None:
     """Runs the delta load process for daily update files."""
     settings = Settings()
-    console.print(f"Starting delta load for mode: [bold]{settings.load_mode}[/bold]")
+    logger.info("Starting delta load.", extra={"mode": settings.load_mode})
 
     adapter = get_adapter(settings.db_adapter, settings.db_connection_string)
     client = NLMFTPClient()
 
     if not adapter.has_completed_baseline():
-        console.print("[bold red]Error: Baseline must be loaded before deltas.[/bold red]")
+        logger.error("Baseline must be loaded before deltas can be processed.")
         raise typer.Exit(code=1)
 
     try:
         files_to_process = _get_files_to_process(client, adapter, "update")
         if not files_to_process:
-            console.print("[bold green]No new update files to process.[/bold green]")
+            logger.info("No new update files to process.")
             return
 
-        console.print(f"Found {len(files_to_process)} new update files.")
+        logger.info(f"Found {len(files_to_process)} new update files to process.")
         if limit:
             files_to_process = files_to_process[:limit]
-            console.print(f"Processing a maximum of {limit} file(s).")
+            logger.info(f"Processing a maximum of {limit} file(s).")
 
         for data_filename, md5_filename in files_to_process:
             try:
@@ -209,16 +192,18 @@ def run_delta(
                     file_info=(data_filename, md5_filename),
                     file_type="DELTA",
                     chunk_size=chunk_size,
-                    is_initial_load=False, # Deltas are never initial loads
+                    is_initial_load=False,
                 )
             except Exception as e:
-                console.print(f"[bold red]Error on {data_filename}: {e}[/bold red]")
-                console.print("Aborting delta run to ensure sequential processing.")
+                logger.exception(
+                    f"Error processing {data_filename}. Aborting delta run to ensure sequential processing.",
+                    exc_info=e,
+                )
                 raise typer.Exit(code=1)
 
-        console.rule("[bold green]Delta run finished.[/bold green]")
+        logger.info("Delta run finished.")
     except Exception as e:
-        console.print(f"[bold red]Critical error during delta run: {e}[/bold red]")
+        logger.exception("Critical error during delta run.", exc_info=e)
         raise typer.Exit(code=1)
 
 
@@ -227,23 +212,26 @@ def _process_single_file(client, adapter, settings, file_info, file_type, chunk_
     data_filename, md5_filename = file_info
     local_path = ""
     total_records = 0
+    log_extra = {"file_name": data_filename, "file_type": file_type}
 
     try:
-        console.rule(f"[bold cyan]Processing: {data_filename}[/bold cyan]")
+        logger.info("Processing file.", extra=log_extra)
 
         remote_dir = client.BASELINE_DIR if file_type == "BASELINE" else client.UPDATE_DIR
         md5_checksum = client.get_remote_checksum(remote_dir, md5_filename)
+        log_extra["md5_checksum"] = md5_checksum
 
         adapter.manage_load_state(
             file_name=data_filename, status="DOWNLOADING", file_type=file_type, md5_checksum=md5_checksum
         )
-
+        logger.info("Downloading and verifying file.", extra=log_extra)
         local_path = client.download_and_verify_file(
             remote_dir, data_filename, md5_filename, settings.local_staging_dir
         )
 
         adapter.manage_load_state(file_name=data_filename, status="LOADING")
         adapter.create_staging_tables(mode=settings.load_mode)
+        logger.info("Staging tables created.", extra=log_extra)
 
         parser_gen = parse_pubmed_xml(
             local_path, load_mode=settings.load_mode, chunk_size=chunk_size
@@ -252,32 +240,34 @@ def _process_single_file(client, adapter, settings, file_info, file_type, chunk_
         for op_type, chunk_data in parser_gen:
             if op_type == "UPSERT":
                 num_records = next((len(v) for v in chunk_data.values() if v), 0)
-                console.print(f"Staging {num_records} upserts...")
+                logger.info(f"Staging {num_records} upserts...", extra=log_extra)
                 adapter.bulk_load_chunk(data_chunk=chunk_data)
                 total_records += num_records
             elif op_type == "DELETE":
                 pmids_to_delete = chunk_data.get("pmids", [])
-                console.print(f"Processing {len(pmids_to_delete)} deletions...")
+                logger.info(f"Processing {len(pmids_to_delete)} deletions...", extra=log_extra)
                 adapter.process_deletions(pmid_list=pmids_to_delete, mode=settings.load_mode)
                 total_records += len(pmids_to_delete)
 
-        console.print("Merging data into final tables...")
+        logger.info("Merging data into final tables...", extra=log_extra)
         adapter.execute_merge_strategy(mode=settings.load_mode, is_initial_load=is_initial_load)
 
         adapter.manage_load_state(
             file_name=data_filename, status="COMPLETE", records_processed=total_records
         )
-        console.print(f"[bold green]Successfully processed {data_filename}.[/bold green]")
+        log_extra["records_processed"] = total_records
+        logger.info("Successfully processed file.", extra=log_extra)
 
     except Exception as e:
         adapter.manage_load_state(file_name=data_filename, status="FAILED")
-        console.print(f"[bold red]Failed to process {data_filename}. Marked as FAILED.[/bold red]")
-        raise # Re-raise the exception to be handled by the caller
+        logger.exception(f"Failed to process {data_filename}. Marked as FAILED.", exc_info=e, extra=log_extra)
+        raise
 
     finally:
         if local_path and os.path.exists(local_path):
             os.remove(local_path)
-            console.print(f"Cleaned up local file: {local_path}")
+            logger.info(f"Cleaned up local file: {local_path}", extra=log_extra)
+
 
 if __name__ == "__main__":
     app()

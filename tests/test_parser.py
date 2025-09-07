@@ -1,3 +1,4 @@
+import datetime
 import gzip
 import os
 from pathlib import Path
@@ -74,20 +75,20 @@ def test_parse_pubmed_xml_yields_correct_data(sample_xml_gz_file: str):
 
     # Check the first record
     record1 = chunk["citations_json"][0]
-    assert record1["pmid"] == 12345
-    assert record1["date_revised"] == "2022-10-15"
-    assert isinstance(record1["data"], dict)
-    assert "MedlineCitation" in record1["data"]
+    assert record1.pmid == 12345
+    assert record1.date_revised == datetime.date(2022, 10, 15)
+    assert isinstance(record1.data, dict)
+    assert "MedlineCitation" in record1.data
     # Check a nested value in the raw data
-    assert record1["data"]["MedlineCitation"]["Article"]["ArticleTitle"]["#text"] == "A test article."
+    assert record1.data["MedlineCitation"]["Article"]["ArticleTitle"]["#text"] == "A test article."
 
     # Check the second record
     record2 = chunk["citations_json"][1]
-    assert record2["pmid"] == 67890
+    assert record2.pmid == 67890
     # Check that month abbreviation 'Jan' was correctly converted
-    assert record2["date_revised"] == "2023-01-01"
-    assert "MedlineCitation" in record2["data"]
-    assert record2["data"]["MedlineCitation"]["PMID"]["#text"] == "67890"
+    assert record2.date_revised == datetime.date(2023, 1, 1)
+    assert "MedlineCitation" in record2.data
+    assert record2.data["MedlineCitation"]["PMID"]["#text"] == "67890"
 
 def test_parse_pubmed_xml_handles_empty_file(tmp_path: Path):
     """Tests that the parser handles empty or malformed files gracefully."""
