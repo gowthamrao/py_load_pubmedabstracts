@@ -99,7 +99,21 @@ class PostgresAdapter(DatabaseAdapter):
             conn.commit()
 
     def process_deletions(self, pmid_list: List[int]) -> None:
-        raise NotImplementedError
+        """Removes specified PMIDs from the citations_json table."""
+        if not pmid_list:
+            return
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                # Use = ANY(%s) for efficient deletion of a list of IDs
+                cur.execute(
+                    "DELETE FROM citations_json WHERE pmid = ANY(%s)",
+                    (pmid_list,),  # Pass the list as a tuple for the adapter
+                )
+                # Optionally, log the number of rows affected.
+                # In a real app, you'd use a proper logger.
+                print(f"Processed {cur.rowcount} deletions.")
+            conn.commit()
 
     def execute_merge_strategy(self, is_initial_load: bool = False) -> None:
         """

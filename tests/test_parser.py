@@ -59,7 +59,7 @@ def test_parse_pubmed_xml_yields_correct_data(sample_xml_gz_file: str):
 
     # Get the first (and only) chunk
     try:
-        results = next(parser_gen)
+        operation_type, chunk = next(parser_gen)
     except StopIteration:
         pytest.fail("Parser did not yield any results.")
 
@@ -68,10 +68,11 @@ def test_parse_pubmed_xml_yields_correct_data(sample_xml_gz_file: str):
         next(parser_gen)
 
     # Assertions
-    assert len(results) == 2
+    assert operation_type == "UPSERT"
+    assert len(chunk) == 2
 
     # Check the first record
-    record1 = results[0]
+    record1 = chunk[0]
     assert record1["pmid"] == 12345
     assert record1["date_revised"] == "2022-10-15"
     assert isinstance(record1["data"], dict)
@@ -80,7 +81,7 @@ def test_parse_pubmed_xml_yields_correct_data(sample_xml_gz_file: str):
     assert record1["data"]["MedlineCitation"]["Article"]["ArticleTitle"]["#text"] == "A test article."
 
     # Check the second record
-    record2 = results[1]
+    record2 = chunk[1]
     assert record2["pmid"] == 67890
     # Check that month abbreviation 'Jan' was correctly converted
     assert record2["date_revised"] == "2023-01-01"

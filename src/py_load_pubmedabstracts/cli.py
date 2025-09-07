@@ -236,5 +236,126 @@ def run_baseline(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def run_delta(
+    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limit the number of files to process."),
+    chunk_size: int = typer.Option(20000, help="Number of records to process in each chunk."),
+) -> None:
+    """
+    Runs the delta load process for daily update files.
+    """
+    settings = Settings()
+    console.print("Starting delta load...")
+    console.print(f"Using adapter: {settings.db_adapter}, Mode: {settings.load_mode}")
+
+    try:
+        adapter = get_adapter(adapter_name=settings.db_adapter, dsn=settings.db_connection_string)
+    except ValueError as e:
+        console.print(f"[bold red]Error: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+    client = NLMFTPClient()
+
+    try:
+        # 1. Determine which files to process
+        console.print("Fetching remote file list from NLM FTP server...")
+        remote_files = client.list_update_files()
+
+        console.print("Fetching list of completed files from the database...")
+        completed_files = set(adapter.get_completed_files())
+
+        # Files must be processed in chronological order
+        files_to_process = sorted([f for f in remote_files if f[0] not in completed_files], key=lambda x: x[0])
+
+        if not files_to_process:
+            console.print("[bold green]No new update files to process. Database is up-to-date.[/bold green]")
+            return
+
+        console.print(f"Found {len(files_to_process)} new update files to process.")
+        if limit:
+            console.print(f"Applying limit: processing at most {limit} file(s).")
+            files_to_process = files_to_process[:limit]
+
+        # 2. Process each file
+        for data_filename, md5_filename in files_to_process:
+            local_path = ""
+            total_upserts = 0
+            total_deletes = 0
+            try:
+                console.rule(f"[bold cyan]Processing: {data_filename}[/bold cyan]")
+
+                # a. Update state: DOWNLOADING
+                console.print("Fetching remote checksum...")
+                md5_checksum = client.get_remote_checksum(
+                    remote_dir=client.UPDATE_DIR, md5_filename=md5_filename
+                )
+                adapter.manage_load_state(
+                    file_name=data_filename, status="DOWNLOADING", file_type="DELTA", md5_checksum=md5_checksum
+                )
+
+                # b. Download and verify
+                local_path = client.download_and_verify_file(
+                    remote_dir=client.UPDATE_DIR,
+                    data_filename=data_filename,
+                    md5_filename=md5_filename,
+                    local_staging_dir=settings.local_staging_dir,
+                )
+
+                # c. Update state: LOADING
+                adapter.manage_load_state(file_name=data_filename, status="LOADING")
+
+                # d. Create staging table for any potential upserts
+                adapter.create_staging_tables()
+
+                # e. Parse and process deletions and staged upserts
+                parser_gen = parse_pubmed_xml(local_path, chunk_size=chunk_size)
+
+                for operation_type, chunk in parser_gen:
+                    if operation_type == "DELETE":
+                        console.print(f"Processing {len(chunk)} deletions...")
+                        adapter.process_deletions(chunk)
+                        total_deletes += len(chunk)
+
+                    elif operation_type == "UPSERT":
+                        console.print(f"Staging {len(chunk)} upserts...")
+                        # Convert 'data' dict to JSON string for loading
+                        for record in chunk:
+                            record["data"] = json.dumps(record["data"])
+                        adapter.bulk_load_chunk(data_chunk=iter(chunk), target_table="_staging_citations_json")
+                        total_upserts += len(chunk)
+
+                # f. If any records were staged, merge them now
+                if total_upserts > 0:
+                    console.print(f"Merging {total_upserts} staged records into final table...")
+                    # `is_initial_load` must be False to use ON CONFLICT
+                    adapter.execute_merge_strategy(is_initial_load=False)
+                    console.print("[green]Merge complete.[/green]")
+
+                # g. Update state: COMPLETE
+                total_records_processed = total_upserts + total_deletes
+                adapter.manage_load_state(
+                    file_name=data_filename, status="COMPLETE", records_processed=total_records_processed
+                )
+                console.print(f"[bold green]Successfully processed {data_filename}. Upserts: {total_upserts}, Deletions: {total_deletes}[/bold green]")
+
+            except Exception as e:
+                console.print(f"[bold red]Error processing file {data_filename}: {e}[/bold red]")
+                adapter.manage_load_state(file_name=data_filename, status="FAILED")
+                console.print(f"Marked {data_filename} as FAILED. Aborting delta run to ensure sequential processing.")
+                raise typer.Exit(code=1) # For delta loads, we must stop on failure
+
+            finally:
+                # h. Clean up downloaded file
+                if local_path and os.path.exists(local_path):
+                    os.remove(local_path)
+                    console.print(f"Cleaned up local file: {local_path}")
+
+        console.rule("[bold green]Delta run finished.[/bold green]")
+
+    except Exception as e:
+        console.print(f"[bold red]A critical error occurred during the delta run: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
