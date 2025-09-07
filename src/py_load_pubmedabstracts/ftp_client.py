@@ -55,6 +55,12 @@ class NLMFTPClient:
         checksum = checksum_line.split("= ")[1].strip()
         return checksum
 
+    def get_remote_checksum(self, remote_dir: str, md5_filename: str) -> str:
+        """Connects to the FTP server and retrieves the checksum hash for a given file."""
+        with self._connect() as ftp:
+            ftp.cwd(remote_dir)
+            return self._get_remote_checksum(ftp, md5_filename)
+
     def _download_file(self, ftp: ftplib.FTP, remote_filename: str, local_path: str) -> None:
         """Downloads a single file using FTP's binary transfer mode."""
         with open(local_path, "wb") as f:

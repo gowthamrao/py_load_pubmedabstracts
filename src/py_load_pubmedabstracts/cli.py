@@ -82,45 +82,9 @@ def list_remote_files(
         raise typer.Exit(code=1)
 
 
-@app.command()
-def download_file(
-    filename: str = typer.Argument(..., help="The name of the baseline file to download, e.g., 'pubmed25n0001.xml.gz'"),
-    staging_dir: str = typer.Option("/tmp/pubmed_staging", help="The local directory to download files to."),
-) -> None:
-    """
-    Downloads a single baseline file from the NLM FTP server and verifies its checksum.
-    """
-    client = NLMFTPClient()
-    console.print(f"Searching for file {filename} in baseline file list...")
-
-    try:
-        # Find the corresponding md5 file
-        baseline_files = client.list_baseline_files()
-        found_file = next((f for f in baseline_files if f[0] == filename), None)
-
-        if not found_file:
-            console.print(f"[bold red]Error: File '{filename}' not found in the baseline file list.[/bold red]")
-            raise typer.Exit(code=1)
-
-        data_filename, md5_filename = found_file
-
-        console.print(f"Found file pair: {data_filename}, {md5_filename}")
-
-        local_path = client.download_and_verify_file(
-            remote_dir=client.BASELINE_DIR,
-            data_filename=data_filename,
-            md5_filename=md5_filename,
-            local_staging_dir=staging_dir,
-        )
-
-        console.print(f"\n[bold green]Successfully downloaded and verified file to:[/bold green] {local_path}")
-
-    except Exception as e:
-        console.print(f"[bold red]An error occurred during download and verification: {e}[/bold red]")
-        raise typer.Exit(code=1)
-
-
 import json
+import os
+from typing import Optional
 
 from .parser import parse_pubmed_xml
 
@@ -128,74 +92,153 @@ from .parser import parse_pubmed_xml
 @app.command()
 def check_status() -> None:
     """
-    Displays the current state of the loaded files.
+    Displays the current state of the loaded files from the load history table.
     """
     settings = Settings()
-    console.print(f"Checking status for adapter {settings.db_adapter}...")
-    # This will be implemented later
-    console.print("Status check complete.")
+    console.print(f"Checking status using adapter '{settings.db_adapter}'...")
+    if settings.db_adapter != "postgresql":
+        console.print(f"[bold red]Error: Unsupported database adapter '{settings.db_adapter}'.[/bold red]")
+        raise typer.Exit(code=1)
+
+    try:
+        adapter = PostgresAdapter(dsn=settings.db_connection_string)
+        completed_files = adapter.get_completed_files()
+
+        table = Table("Completed Files")
+        if not completed_files:
+            table.add_row("[italic]No files have been successfully processed yet.[/italic]")
+        else:
+            for file_name in completed_files:
+                table.add_row(file_name)
+        console.print(table)
+        console.print("\n[bold green]Status check complete.[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Error checking status: {e}[/bold red]")
+        raise typer.Exit(code=1)
 
 
 @app.command()
 def run_baseline(
-    input_file: str = typer.Argument(
-        ..., help="Path to a local .xml.gz file to process."
+    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limit the number of files to process."),
+    initial_load: bool = typer.Option(
+        False,
+        "--initial-load",
+        help="Use optimizations for an initial, empty database. Drops and recreates the primary key."
     ),
-    chunk_size: int = typer.Option(
-        20000, help="Number of records to process in each chunk."
-    ),
+    chunk_size: int = typer.Option(20000, help="Number of records to process in each chunk."),
 ) -> None:
     """
-    (Simplified) Runs a baseline load from a single local file into a staging table.
+    Runs the full baseline load process: discovers, downloads, verifies, and loads files.
     """
     settings = Settings()
-    console.print(f"Starting baseline load for file: {input_file}")
+    console.print(f"Starting baseline load...")
     console.print(f"Using adapter: {settings.db_adapter}, Mode: {settings.load_mode}")
+    if initial_load:
+        console.print("[yellow]--initial-load flag set. Will optimize for an empty database.[/yellow]")
 
     if settings.db_adapter != "postgresql":
         console.print(f"[bold red]Error: This command currently only supports the 'postgresql' adapter.[/bold red]")
         raise typer.Exit(code=1)
 
+    adapter = PostgresAdapter(dsn=settings.db_connection_string)
+    client = NLMFTPClient()
+
     try:
-        # 1. Initialize the adapter
-        adapter = PostgresAdapter(dsn=settings.db_connection_string)
+        # 1. Determine which files to process
+        console.print("Fetching remote file list from NLM FTP server...")
+        remote_files = client.list_baseline_files()
+        remote_filenames = {f[0] for f in remote_files}
 
-        # 2. Create staging tables
-        console.print("Creating staging tables...")
-        adapter.create_staging_tables()
-        console.print("[green]Staging tables created successfully.[/green]")
+        console.print("Fetching list of completed files from the database...")
+        completed_files = set(adapter.get_completed_files())
 
-        # 3. Parse XML and load data in chunks
-        total_records_processed = 0
-        parser_gen = parse_pubmed_xml(input_file, chunk_size=chunk_size)
+        files_to_process = sorted([f for f in remote_files if f[0] not in completed_files], key=lambda x: x[0])
 
-        for i, chunk in enumerate(parser_gen):
-            console.print(f"Processing chunk {i + 1} with {len(chunk)} records...")
+        if not files_to_process:
+            console.print("[bold green]No new baseline files to process. Database is up-to-date.[/bold green]")
+            return
 
-            # Convert 'data' dict to JSON string for loading
-            for record in chunk:
-                record["data"] = json.dumps(record["data"])
+        console.print(f"Found {len(files_to_process)} new baseline files to process.")
+        if limit:
+            console.print(f"Applying limit: processing at most {limit} file(s).")
+            files_to_process = files_to_process[:limit]
 
-            adapter.bulk_load_chunk(
-                data_chunk=iter(chunk), target_table="_staging_citations_json"
-            )
-            total_records_processed += len(chunk)
-            console.print(f"Chunk {i + 1} loaded successfully.")
+        # 2. Apply pre-load optimizations if it's an initial load
+        if initial_load:
+            adapter.optimize_database(stage="pre-load")
 
-        console.print(
-            f"\n[bold green]Baseline load from file completed.[/bold green]"
-        )
-        console.print(f"Total records processed: {total_records_processed}")
-        console.print(
-            "[yellow]Note: Data is in staging table `_staging_citations_json`. "
-            "Merge strategy has not been implemented yet.[/yellow]"
-        )
+        # 3. Process each file
+        for data_filename, md5_filename in files_to_process:
+            local_path = ""
+            total_records_processed = 0
+            try:
+                console.rule(f"[bold cyan]Processing: {data_filename}[/bold cyan]")
 
-    except FileNotFoundError:
-        console.print(f"[bold red]Error: Input file not found at '{input_file}'[/bold red]")
-        raise typer.Exit(code=1)
+                # a. Update state: DOWNLOADING
+                console.print("Fetching remote checksum...")
+                md5_checksum = client.get_remote_checksum(
+                    remote_dir=client.BASELINE_DIR, md5_filename=md5_filename
+                )
+                adapter.manage_load_state(
+                    file_name=data_filename, status="DOWNLOADING", file_type="BASELINE", md5_checksum=md5_checksum
+                )
+
+                # b. Download and verify
+                local_path = client.download_and_verify_file(
+                    remote_dir=client.BASELINE_DIR,
+                    data_filename=data_filename,
+                    md5_filename=md5_filename,
+                    local_staging_dir=settings.local_staging_dir,
+                )
+
+                # c. Update state: LOADING
+                adapter.manage_load_state(file_name=data_filename, status="LOADING")
+                adapter.create_staging_tables()
+
+                # d. Parse and load to staging
+                parser_gen = parse_pubmed_xml(local_path, chunk_size=chunk_size)
+                for i, chunk in enumerate(parser_gen):
+                    console.print(f"Loading chunk {i + 1} with {len(chunk)} records...")
+                    # Convert 'data' dict to JSON string for loading
+                    for record in chunk:
+                        record["data"] = json.dumps(record["data"])
+                    adapter.bulk_load_chunk(data_chunk=iter(chunk), target_table="_staging_citations_json")
+                    total_records_processed += len(chunk)
+
+                console.print(f"Staging complete. Total records: {total_records_processed}")
+
+                # e. Merge data from staging to final table
+                console.print("Merging data into final table...")
+                adapter.execute_merge_strategy(is_initial_load=initial_load)
+                console.print("[green]Merge complete.[/green]")
+
+                # f. Update state: COMPLETE
+                adapter.manage_load_state(
+                    file_name=data_filename, status="COMPLETE", records_processed=total_records_processed
+                )
+                console.print(f"[bold green]Successfully processed {data_filename}.[/bold green]")
+
+            except Exception as e:
+                console.print(f"[bold red]Error processing file {data_filename}: {e}[/bold red]")
+                adapter.manage_load_state(file_name=data_filename, status="FAILED")
+                console.print(f"Marked {data_filename} as FAILED. Continuing to next file.")
+
+            finally:
+                # g. Clean up downloaded file
+                if local_path and os.path.exists(local_path):
+                    os.remove(local_path)
+                    console.print(f"Cleaned up local file: {local_path}")
+
+        # 4. Apply post-load optimizations
+        if initial_load:
+            adapter.optimize_database(stage="post-load")
+
+        console.rule("[bold green]Baseline run finished.[/bold green]")
+
     except Exception as e:
-        console.print(f"[bold red]An error occurred during the baseline run: {e}[/bold red]")
+        console.print(f"[bold red]A critical error occurred during the baseline run: {e}[/bold red]")
+        if initial_load:
+             console.print("[bold yellow]Warning: An error occurred during an initial load. The database might be in an inconsistent state. Consider running initialize-db and retrying.[/bold yellow]")
         raise typer.Exit(code=1)
 
 
