@@ -227,9 +227,28 @@ class PostgresAdapter(DatabaseAdapter):
                     cur.execute("ALTER TABLE IF EXISTS citations_json ADD CONSTRAINT citations_json_pkey PRIMARY KEY (pmid);")
             conn.commit()
 
+    def reset_failed_files(self) -> int:
+        """Resets the status of 'FAILED' files to 'PENDING'."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE _pubmed_load_history SET status = 'PENDING' WHERE status = 'FAILED'"
+                )
+                # Return the number of rows updated
+                return cur.rowcount
+
     def get_completed_files(self) -> List[str]:
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT file_name FROM _pubmed_load_history WHERE status = 'COMPLETE'")
                 # mypy check: cur.fetchall() returns a list of tuples
                 return [row[0] for row in cur.fetchall()]
+
+    def has_completed_baseline(self) -> bool:
+        """Checks if at least one baseline file has the 'COMPLETE' status."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM _pubmed_load_history WHERE status = 'COMPLETE' AND file_type = 'BASELINE' LIMIT 1"
+                )
+                return cur.fetchone() is not None

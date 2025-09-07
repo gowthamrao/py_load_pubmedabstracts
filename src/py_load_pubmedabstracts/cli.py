@@ -111,6 +111,27 @@ def check_status() -> None:
 
 
 @app.command()
+def reset_failed() -> None:
+    """
+    Resets the status of FAILED files in the state table for reprocessing.
+    """
+    settings = Settings()
+    console.print("Connecting to the database to reset failed files...")
+    try:
+        adapter = get_adapter(adapter_name=settings.db_adapter, dsn=settings.db_connection_string)
+        num_reset = adapter.reset_failed_files()
+        if num_reset > 0:
+            console.print(
+                f"[bold yellow]Reset status for {num_reset} failed file(s) to 'PENDING'.[/bold yellow]"
+            )
+        else:
+            console.print("[bold green]No failed files found to reset.[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Error resetting failed files: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def run_baseline(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limit the number of files to process."),
     initial_load: bool = typer.Option(
@@ -252,6 +273,15 @@ def run_delta(
         adapter = get_adapter(adapter_name=settings.db_adapter, dsn=settings.db_connection_string)
     except ValueError as e:
         console.print(f"[bold red]Error: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+    # FRD 2.2.1: The Annual Baseline load must be completed successfully before any Daily Update files can be processed.
+    if not adapter.has_completed_baseline():
+        console.print(
+            "[bold red]Error: Cannot run delta load.[/bold red] "
+            "No completed baseline files found in the load history. "
+            "Please run the `run-baseline` command successfully at least once."
+        )
         raise typer.Exit(code=1)
 
     client = NLMFTPClient()
