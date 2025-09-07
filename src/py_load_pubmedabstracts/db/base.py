@@ -27,15 +27,32 @@ class DatabaseAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def execute_merge_strategy(self) -> None:
-        """Moves data from staging to final tables using UPSERT logic."""
+    def execute_merge_strategy(self, is_initial_load: bool = False) -> None:
+        """
+        Moves data from staging to final tables.
+
+        Args:
+            is_initial_load: If True, performs a simple INSERT, assuming the
+                             target table has no constraints. If False, performs
+                             an UPSERT (INSERT ... ON CONFLICT).
+        """
         raise NotImplementedError
 
     @abstractmethod
     def manage_load_state(
-        self, file_name: str, status: str, checksum: str | None = None
+        self,
+        file_name: str,
+        status: str,
+        file_type: str | None = None,
+        md5_checksum: str | None = None,
+        records_processed: int | None = None,
     ) -> None:
-        """Interface for state management interactions."""
+        """
+        Manages the state of a file in the _pubmed_load_history table.
+
+        This method should handle both inserting a new record for a file and
+        updating the status and other metadata of an existing record.
+        """
         raise NotImplementedError
 
     @abstractmethod

@@ -101,16 +101,117 @@ class PostgresAdapter(DatabaseAdapter):
     def process_deletions(self, pmid_list: List[int]) -> None:
         raise NotImplementedError
 
-    def execute_merge_strategy(self) -> None:
-        raise NotImplementedError
+    def execute_merge_strategy(self, is_initial_load: bool = False) -> None:
+        """
+        Moves data from staging to final tables.
+        If is_initial_load is True, performs a simple INSERT.
+        Otherwise, performs an UPSERT (INSERT ... ON CONFLICT).
+        """
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                if is_initial_load:
+                    # For the initial load, we assume no conflicts and just insert.
+                    # This is used after dropping the PK for performance.
+                    cur.execute("""
+                        INSERT INTO citations_json (pmid, date_revised, data)
+                        SELECT pmid, date_revised, data FROM _staging_citations_json;
+                    """)
+                else:
+                    # For subsequent loads, we use ON CONFLICT to handle updates.
+                    cur.execute("""
+                        INSERT INTO citations_json (pmid, date_revised, data)
+                        SELECT pmid, date_revised, data FROM _staging_citations_json
+                        ON CONFLICT (pmid) DO UPDATE SET
+                            date_revised = EXCLUDED.date_revised,
+                            data = EXCLUDED.data;
+                    """)
+                # Clean up the staging table after merge
+                cur.execute("DROP TABLE _staging_citations_json;")
+            conn.commit()
 
     def manage_load_state(
-        self, file_name: str, status: str, checksum: Optional[str] = None
+        self,
+        file_name: str,
+        status: str,
+        file_type: str | None = None,
+        md5_checksum: str | None = None,
+        records_processed: int | None = None,
     ) -> None:
-        raise NotImplementedError
+        """
+        Inserts or updates the state of a file in the _pubmed_load_history table.
+        """
+        from datetime import datetime, timezone
+        from psycopg import sql
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                now = datetime.now(timezone.utc)
+
+                if status == "DOWNLOADING":
+                    # This is the initial state, so we INSERT a new record.
+                    # ON CONFLICT ensures that if we re-run for a file that already
+                    # exists, we just update its status without creating a duplicate.
+                    if not file_type or not md5_checksum:
+                        raise ValueError("file_type and md5_checksum are required for initial state.")
+
+                    query = sql.SQL("""
+                        INSERT INTO _pubmed_load_history (file_name, file_type, md5_checksum, download_timestamp, status)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (file_name) DO UPDATE SET
+                            status = EXCLUDED.status,
+                            download_timestamp = EXCLUDED.download_timestamp;
+                    """)
+                    cur.execute(query, [file_name, file_type, md5_checksum, now, status])
+                else:
+                    # For subsequent states, we UPDATE the existing record.
+                    set_clauses = [sql.SQL("status = %s")]
+                    params = [status]
+
+                    if status == "LOADING":
+                        set_clauses.append(sql.SQL("load_start_timestamp = %s"))
+                        params.append(now)
+
+                    if status in ("COMPLETE", "FAILED"):
+                        set_clauses.append(sql.SQL("load_end_timestamp = %s"))
+                        params.append(now)
+
+                    if status == "COMPLETE":
+                        if records_processed is None:
+                            raise ValueError("records_processed is required for COMPLETE state.")
+                        set_clauses.append(sql.SQL("records_processed = %s"))
+                        params.append(records_processed)
+
+                    params.append(file_name)
+
+                    query = sql.SQL("UPDATE _pubmed_load_history SET {} WHERE file_name = %s").format(
+                        sql.SQL(", ").join(set_clauses)
+                    )
+                    cur.execute(query, params)
+            conn.commit()
 
     def optimize_database(self, stage: str) -> None:
-        raise NotImplementedError
+        """
+        Optimizes the database for bulk loading.
+
+        'pre-load': Drops constraints and indexes that would slow down inserts.
+        'post-load': Recreates the constraints and indexes.
+
+        Warning: This is intended for an initial baseline load into an empty
+        table. The `execute_merge_strategy` with `ON CONFLICT` will fail if
+        the primary key constraint is missing.
+        """
+        if stage not in ("pre-load", "post-load"):
+            raise ValueError("Stage must be either 'pre-load' or 'post-load'")
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                if stage == "pre-load":
+                    print("Optimizing for pre-load: Dropping primary key on citations_json...")
+                    cur.execute("ALTER TABLE IF EXISTS citations_json DROP CONSTRAINT IF EXISTS citations_json_pkey;")
+                elif stage == "post-load":
+                    print("Optimizing for post-load: Recreating primary key on citations_json...")
+                    cur.execute("ALTER TABLE IF EXISTS citations_json ADD CONSTRAINT citations_json_pkey PRIMARY KEY (pmid);")
+            conn.commit()
 
     def get_completed_files(self) -> List[str]:
         with self._get_connection() as conn:
