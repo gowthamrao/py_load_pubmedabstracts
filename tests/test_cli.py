@@ -9,11 +9,6 @@ from py_load_pubmedabstracts.cli import app
 runner = CliRunner()
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Fixture to start a PostgreSQL container for the test module."""
-    with PostgresContainer("postgres:16-alpine") as postgres:
-        yield postgres
 
 
 def test_initialize_db(postgres_container: PostgresContainer):

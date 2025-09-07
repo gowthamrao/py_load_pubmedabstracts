@@ -61,58 +61,72 @@ def xml_to_dict(element: etree._Element) -> Dict[str, Any]:
 
 def parse_pubmed_xml(
     file_path: str, chunk_size: int = 20000
-) -> Generator[List[Dict[str, Any]], None, None]:
+) -> Generator[Tuple[str, List[Dict[str, Any]] | List[int]], None, None]:
     """
-    Parses a gzipped PubMed XML file iteratively and yields chunks of processed records.
+    Parses a gzipped PubMed XML file iteratively and yields chunks of operations.
 
     This parser is designed for memory efficiency, using `lxml.etree.iterparse`.
-    It focuses on extracting data for the 'FULL' (JSONB) representation.
+    It handles both <MedlineCitation> elements (for upserts) and
+    <DeleteCitation> elements (for deletions).
 
     Args:
         file_path: Path to the `.xml.gz` file.
         chunk_size: The number of records to include in each yielded chunk.
 
     Yields:
-        A list of dictionaries, where each dictionary represents a citation
-        ready for JSON serialization and loading.
+        A tuple containing the operation type ('UPSERT' or 'DELETE') and a list
+        of records (for upserts) or PMIDs (for deletions).
     """
-    chunk = []
+    upsert_chunk: List[Dict[str, Any]] = []
+    delete_chunk: List[int] = []
     with gzip.open(file_path, "rb") as f:
-        # Use iterparse to process elements iteratively
-        context = etree.iterparse(f, events=("end",), tag="MedlineCitation")
+        # Use iterparse to process multiple element types iteratively
+        context = etree.iterparse(f, events=("end",), tag=("MedlineCitation", "DeleteCitation"))
 
         for _, elem in context:
-            pmid_str = _get_value(elem, "PMID")
-            if not pmid_str:
-                elem.clear()
-                # Also clear previous siblings from memory
-                while elem.getprevious() is not None:
-                    del elem.getparent()[0]
-                continue
+            if elem.tag == "MedlineCitation":
+                pmid_str = _get_value(elem, "PMID")
+                if not pmid_str:
+                    # Clear memory and continue
+                    elem.clear()
+                    while elem.getprevious() is not None:
+                        del elem.getparent()[0]
+                    continue
 
-            # Extract revised date for the main table column
-            revised_year, revised_month, revised_day = _get_date_parts(elem, "DateRevised")
-            date_revised = _construct_date(revised_year, revised_month, revised_day)
+                # Extract revised date for the main table column
+                revised_year, revised_month, revised_day = _get_date_parts(elem, "DateRevised")
+                date_revised = _construct_date(revised_year, revised_month, revised_day)
 
-            # For the 'FULL' representation, we convert the whole element to a dict
-            citation_data = xml_to_dict(elem)
+                # For the 'FULL' representation, convert the whole element to a dict
+                citation_data = xml_to_dict(elem)
 
-            record = {
-                "pmid": int(pmid_str),
-                "date_revised": date_revised,
-                "data": citation_data,
-            }
-            chunk.append(record)
+                record = {
+                    "pmid": int(pmid_str),
+                    "date_revised": date_revised,
+                    "data": citation_data,
+                }
+                upsert_chunk.append(record)
 
-            if len(chunk) >= chunk_size:
-                yield chunk
-                chunk = []
+                if len(upsert_chunk) >= chunk_size:
+                    yield "UPSERT", upsert_chunk
+                    upsert_chunk = []
+
+            elif elem.tag == "DeleteCitation":
+                # Extract all PMIDs from the DeleteCitation block
+                pmids_to_delete = [int(pmid.text) for pmid in elem.findall("PMID") if pmid.text]
+                delete_chunk.extend(pmids_to_delete)
+
+                if len(delete_chunk) >= chunk_size:
+                    yield "DELETE", delete_chunk
+                    delete_chunk = []
 
             # Crucial for memory management: clear the element and its predecessors
             elem.clear()
             while elem.getprevious() is not None:
                 del elem.getparent()[0]
 
-    # Yield any remaining records in the last chunk
-    if chunk:
-        yield chunk
+    # Yield any remaining records in the last chunks
+    if upsert_chunk:
+        yield "UPSERT", upsert_chunk
+    if delete_chunk:
+        yield "DELETE", delete_chunk

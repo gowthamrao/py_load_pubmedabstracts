@@ -58,11 +58,6 @@ FAKE_CHECKSUM = "d41d8cd98f00b204e9800998ecf8427e" # MD5 of empty string
 
 # --- Fixtures ---
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Starts a PostgreSQL container for the test session."""
-    with PostgresContainer("postgres:15-alpine") as container:
-        yield container
 
 
 @pytest.fixture(scope="module")
