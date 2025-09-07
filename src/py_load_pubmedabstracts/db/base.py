@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Any, List, Generator
+from typing import Any, Dict, Generator, List
+
 
 class DatabaseAdapter(ABC):
     """Abstract Base Class for database adapters."""
@@ -10,24 +11,24 @@ class DatabaseAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_staging_tables(self) -> None:
+    def create_staging_tables(self, mode: str) -> None:
         """Creates temporary/transient tables for the current load."""
         raise NotImplementedError
 
     @abstractmethod
     def bulk_load_chunk(
-        self, data_chunk: Generator[dict, None, None], target_table: str
+        self, data_chunk: Dict[str, List[Dict[str, Any]]]
     ) -> None:
         """Efficiently loads a chunk of data using native capabilities."""
         raise NotImplementedError
 
     @abstractmethod
-    def process_deletions(self, pmid_list: List[int]) -> None:
+    def process_deletions(self, pmid_list: List[int], mode: str) -> None:
         """Removes specified PMIDs."""
         raise NotImplementedError
 
     @abstractmethod
-    def execute_merge_strategy(self, is_initial_load: bool = False) -> None:
+    def execute_merge_strategy(self, mode: str, is_initial_load: bool = False) -> None:
         """
         Moves data from staging to final tables.
 
@@ -56,7 +57,7 @@ class DatabaseAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def optimize_database(self, stage: str) -> None:
+    def optimize_database(self, stage: str, mode: str) -> None:
         """Hooks for pre-load and post-load optimizations."""
         raise NotImplementedError
 
