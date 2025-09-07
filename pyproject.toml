@@ -29,6 +29,9 @@ pytest-mock = "^3.15.0"
 [tool.poetry.scripts]
 py-load-pubmedabstracts = "py_load_pubmedabstracts.cli:app"
 
+[tool.poetry.plugins."py_load_pubmedabstracts.database_adapters"]
+"postgresql" = "py_load_pubmedabstracts.db.postgresql:PostgresAdapter"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
