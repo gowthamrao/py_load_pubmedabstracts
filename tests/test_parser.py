@@ -55,7 +55,7 @@ def test_parse_pubmed_xml_yields_correct_data(sample_xml_gz_file: str):
     Tests that the parser correctly extracts and transforms data from a sample XML.
     """
     # Call the parser
-    parser_gen = parse_pubmed_xml(sample_xml_gz_file, chunk_size=10)
+    parser_gen = parse_pubmed_xml(sample_xml_gz_file, load_mode="FULL", chunk_size=10)
 
     # Get the first (and only) chunk
     try:
@@ -69,10 +69,11 @@ def test_parse_pubmed_xml_yields_correct_data(sample_xml_gz_file: str):
 
     # Assertions
     assert operation_type == "UPSERT"
-    assert len(chunk) == 2
+    assert "citations_json" in chunk
+    assert len(chunk["citations_json"]) == 2
 
     # Check the first record
-    record1 = chunk[0]
+    record1 = chunk["citations_json"][0]
     assert record1["pmid"] == 12345
     assert record1["date_revised"] == "2022-10-15"
     assert isinstance(record1["data"], dict)
@@ -81,7 +82,7 @@ def test_parse_pubmed_xml_yields_correct_data(sample_xml_gz_file: str):
     assert record1["data"]["MedlineCitation"]["Article"]["ArticleTitle"]["#text"] == "A test article."
 
     # Check the second record
-    record2 = chunk[1]
+    record2 = chunk["citations_json"][1]
     assert record2["pmid"] == 67890
     # Check that month abbreviation 'Jan' was correctly converted
     assert record2["date_revised"] == "2023-01-01"
@@ -94,7 +95,7 @@ def test_parse_pubmed_xml_handles_empty_file(tmp_path: Path):
     with gzip.open(file_path, "wt", encoding="utf-8") as f:
         f.write("<root></root>")
 
-    parser_gen = parse_pubmed_xml(str(file_path))
+    parser_gen = parse_pubmed_xml(str(file_path), load_mode="FULL")
     results = list(parser_gen)
 
     assert len(results) == 0

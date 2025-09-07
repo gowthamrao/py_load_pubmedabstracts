@@ -1,24 +1,27 @@
 import pytest
 from testcontainers.postgres import PostgresContainer
 
-
-@pytest.fixture(scope="module")
-def postgres_container():
+# This fixture is function-scoped, ensuring every test gets a fresh database.
+# This is crucial for test isolation, especially with parameterized tests.
+@pytest.fixture(scope="function")
+def postgres_container() -> PostgresContainer:
     """
-    Starts a PostgreSQL container for the test session.
-    The container is shared across all tests in a module.
+    Starts a PostgreSQL container for a single test function.
     """
     try:
-        with PostgresContainer("postgres:15-alpine") as container:
-            # The DSN (Data Source Name) needs to be compatible with psycopg3,
-            # which doesn't use the "+psycopg2" dialect string.
-            container.get_connection_url = (
-                lambda: super(PostgresContainer, container).get_connection_url().replace("+psycopg2", "")
-            )
+        # The 'with' statement ensures the container is stopped and removed
+        # even if tests fail, which is robust.
+        with PostgresContainer("postgres:16-alpine") as container:
             yield container
     except Exception as e:
-        # This is a fallback for environments where Docker is not available
-        # or is inaccessible (e.g., due to permissions or rate limiting).
-        print(f"Could not start Docker container: {e}")
-        print("Integration tests will be skipped.")
-        pytest.skip("Skipping integration tests: Docker not available, permission denied, or rate-limited.")
+        pytest.skip(f"Skipping integration tests: Docker not available. Error: {e}")
+
+
+@pytest.fixture(scope="function")
+def db_conn_str(postgres_container: PostgresContainer) -> str:
+    """
+    Provides a psycopg3-compatible connection string from the container.
+    """
+    # The default get_connection_url() might include a dialect like "+psycopg2"
+    # that psycopg3 doesn't understand. This replacement makes it compatible.
+    return postgres_container.get_connection_url().replace("+psycopg2", "")
