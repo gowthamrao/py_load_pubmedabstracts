@@ -94,9 +94,10 @@ class PostgresAdapter(DatabaseAdapter):
                         cur.execute(f"ALTER TABLE _staging_{table} SET UNLOGGED;")
             conn.commit()
 
-    def bulk_load_chunk(self, data_chunk: Dict[str, List[Dict[str, Any]]]) -> None:
-        """Loads chunks of data into corresponding staging tables."""
+    def bulk_load_chunk(self, data_chunk: Dict[str, List[Any]]) -> None:
+        """Loads chunks of Pydantic models into corresponding staging tables."""
         import json
+        from pydantic import BaseModel
 
         with self._get_connection() as conn:
             with conn.cursor() as cur:
@@ -105,16 +106,17 @@ class PostgresAdapter(DatabaseAdapter):
                         continue
 
                     staging_table_name = f"_staging_{table_name}"
-                    columns = list(records[0].keys())
-
-                    # Special handling for JSONB column
-                    if table_name == "citations_json":
-                        for record in records:
-                            record["data"] = json.dumps(record["data"])
+                    # All records in the list are Pydantic models of the same type
+                    model_instance = records[0]
+                    columns = list(model_instance.model_fields.keys())
 
                     with cur.copy(f"COPY {staging_table_name} ({','.join(columns)}) FROM STDIN") as copy:
-                        for record in records:
-                            copy.write_row([record[col] for col in columns])
+                        for record_model in records:
+                            record_dict = record_model.model_dump()
+                            # Special handling for JSONB column, which needs to be a string
+                            if "data" in record_dict and isinstance(record_dict["data"], dict):
+                                record_dict["data"] = json.dumps(record_dict["data"])
+                            copy.write_row([record_dict[col] for col in columns])
             conn.commit()
 
     def process_deletions(self, pmid_list: List[int], mode: str) -> None:

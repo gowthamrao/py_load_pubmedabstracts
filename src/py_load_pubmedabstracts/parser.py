@@ -1,11 +1,15 @@
 import gzip
+import datetime
 from collections import defaultdict
-from typing import Any, Dict, Generator, List, Tuple
+from typing import Any, Dict, Generator, List, Tuple, Union
 
 from lxml import etree
+from pydantic import BaseModel
+
+from . import models
 
 # Type alias for the complex data structure that will be yielded
-T_DataChunk = Dict[str, List[Dict[str, Any]]]
+T_DataChunk = Dict[str, List[BaseModel]]
 
 
 def _get_value(element: etree._Element, xpath: str, default: Any = None) -> Any:
@@ -66,55 +70,61 @@ def _parse_normalized(
     elem: etree._Element, pmid: int
 ) -> T_DataChunk:
     """
-    Parses a <MedlineCitation> element into a normalized, multi-table structure.
+    Parses a <MedlineCitation> element into a normalized, multi-table structure
+    using Pydantic models.
     """
-    # This function will produce records for multiple tables from one citation
     data: T_DataChunk = defaultdict(list)
 
     # 1. Parse Journal
     journal_issn = _get_value(elem, "Article/Journal/ISSN")
     if journal_issn:
-        data["journals"].append({
-            "issn": journal_issn,
-            "title": _get_value(elem, "Article/Journal/Title"),
-            "iso_abbreviation": _get_value(elem, "Article/Journal/ISOAbbreviation"),
-        })
+        data["journals"].append(
+            models.Journal(
+                issn=journal_issn,
+                title=_get_value(elem, "Article/Journal/Title"),
+                iso_abbreviation=_get_value(elem, "Article/Journal/ISOAbbreviation"),
+            )
+        )
 
     # 2. Parse Citation
-    pub_date_year, pub_date_month, pub_date_day = _get_date_parts(elem, "Article/Journal/JournalIssue/PubDate")
-    data["citations"].append({
-        "pmid": pmid,
-        "title": _get_value(elem, "Article/ArticleTitle"),
-        "abstract": _get_value(elem, "Article/Abstract/AbstractText"),
-        "publication_date": _construct_date(pub_date_year, pub_date_month, pub_date_day),
-        "journal_issn": journal_issn,
-    })
+    pub_date_year, pub_date_month, pub_date_day = _get_date_parts(
+        elem, "Article/Journal/JournalIssue/PubDate"
+    )
+    data["citations"].append(
+        models.Citation(
+            pmid=pmid,
+            title=_get_value(elem, "Article/ArticleTitle"),
+            abstract=_get_value(elem, "Article/Abstract/AbstractText"),
+            publication_date=_construct_date(pub_date_year, pub_date_month, pub_date_day),
+            journal_issn=journal_issn,
+        )
+    )
 
     # 3. Parse Authors
     author_list = elem.find("Article/AuthorList")
     if author_list is not None:
         for i, author_elem in enumerate(author_list.findall("Author")):
-            # Some authors are collective, not individual persons
-            if not _get_value(author_elem, "LastName"):
+            last_name = _get_value(author_elem, "LastName")
+            if not last_name:  # Skip collective authors
                 continue
 
-            # Simple author identifier (could be improved with a hash)
-            author_id_str = (
-                f"{_get_value(author_elem, 'LastName', '')}-"
-                f"{_get_value(author_elem, 'ForeName', '')}"
-            )
+            fore_name = _get_value(author_elem, "ForeName")
+            author_id_str = f"{last_name}-{fore_name}"
+            author_id = hash(author_id_str)
 
-            data["authors"].append({
-                "author_id": hash(author_id_str), # Using hash for a simple ID
-                "last_name": _get_value(author_elem, "LastName"),
-                "fore_name": _get_value(author_elem, "ForeName"),
-                "initials": _get_value(author_elem, "Initials"),
-            })
-            data["citation_authors"].append({
-                "pmid": pmid,
-                "author_id": hash(author_id_str),
-                "display_order": i + 1,
-            })
+            data["authors"].append(
+                models.Author(
+                    author_id=author_id,
+                    last_name=last_name,
+                    fore_name=fore_name,
+                    initials=_get_value(author_elem, "Initials"),
+                )
+            )
+            data["citation_authors"].append(
+                models.CitationAuthor(
+                    pmid=pmid, author_id=author_id, display_order=i + 1
+                )
+            )
 
     # 4. Parse MeSH Headings
     mesh_heading_list = elem.find("MeshHeadingList")
@@ -123,15 +133,17 @@ def _parse_normalized(
             descriptor = mesh_elem.find("DescriptorName")
             if descriptor is not None and descriptor.text:
                 mesh_id_str = f"{descriptor.text}-{descriptor.get('UI')}"
-                data["mesh_terms"].append({
-                    "mesh_id": hash(mesh_id_str),
-                    "term": descriptor.text,
-                    "is_major_topic": descriptor.get("MajorTopicYN", "N") == "Y",
-                })
-                data["citation_mesh_terms"].append({
-                    "pmid": pmid,
-                    "mesh_id": hash(mesh_id_str),
-                })
+                mesh_id = hash(mesh_id_str)
+                data["mesh_terms"].append(
+                    models.MeshTerm(
+                        mesh_id=mesh_id,
+                        term=descriptor.text,
+                        is_major_topic=descriptor.get("MajorTopicYN", "N") == "Y",
+                    )
+                )
+                data["citation_mesh_terms"].append(
+                    models.CitationMeshTerm(pmid=pmid, mesh_id=mesh_id)
+                )
     return data
 
 
@@ -139,7 +151,7 @@ def parse_pubmed_xml(
     file_path: str,
     load_mode: str,
     chunk_size: int = 20000,
-) -> Generator[Tuple[str, T_DataChunk | List[int]], None, None]:
+) -> Generator[Tuple[str, Union[T_DataChunk, Dict[str, List[int]]]], None, None]:
     """
     Parses a gzipped PubMed XML file iteratively and yields chunks of operations.
 
@@ -177,13 +189,18 @@ def parse_pubmed_xml(
 
                 # 'FULL' or 'BOTH' mode processing
                 if load_mode in ("FULL", "BOTH"):
-                    revised_year, revised_month, revised_day = _get_date_parts(elem, "DateRevised")
-                    record = {
-                        "pmid": pmid,
-                        "date_revised": _construct_date(revised_year, revised_month, revised_day),
-                        "data": xml_to_dict(elem),
-                    }
-                    upsert_chunks["citations_json"].append(record)
+                    revised_year, revised_month, revised_day = _get_date_parts(
+                        elem, "DateRevised"
+                    )
+                    upsert_chunks["citations_json"].append(
+                        models.CitationJson(
+                            pmid=pmid,
+                            date_revised=_construct_date(
+                                revised_year, revised_month, revised_day
+                            ),
+                            data=xml_to_dict(elem),
+                        )
+                    )
 
                 # 'NORMALIZED' or 'BOTH' mode processing
                 if load_mode in ("NORMALIZED", "BOTH"):
@@ -203,7 +220,6 @@ def parse_pubmed_xml(
                 ]
                 delete_chunk.extend(pmids_to_delete)
                 if len(delete_chunk) >= chunk_size:
-                    # For deletes, the dictionary has one key
                     yield "DELETE", {"pmids": delete_chunk}
                     delete_chunk = []
 
