@@ -56,12 +56,47 @@ class PostgresAdapter(DatabaseAdapter):
             conn.commit()
 
     def create_staging_tables(self) -> None:
-        raise NotImplementedError
+        """Creates temporary, unlogged tables for high-speed data loading."""
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                # Staging table for the 'FULL' representation
+                cur.execute("""
+                    DROP TABLE IF EXISTS _staging_citations_json;
+                    CREATE UNLOGGED TABLE _staging_citations_json (
+                        pmid INTEGER,
+                        date_revised DATE,
+                        data JSONB
+                    );
+                """)
+                # In the future, a staging table for 'NORMALIZED' would go here
+            conn.commit()
 
     def bulk_load_chunk(
         self, data_chunk: Generator[dict, None, None], target_table: str
     ) -> None:
-        raise NotImplementedError
+        """
+        Loads a chunk of data into a staging table using PostgreSQL's COPY command.
+
+        Args:
+            data_chunk: A generator yielding dictionaries for each row.
+            target_table: The name of the staging table to load into.
+        """
+        if target_table != "_staging_citations_json":
+            raise ValueError(f"Unsupported staging table: {target_table}")
+
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                with cur.copy(f"COPY {target_table} (pmid, date_revised, data) FROM STDIN") as copy:
+                    for record in data_chunk:
+                        # psycopg3 can automatically adapt the dict to the COPY row format
+                        copy.write_row(
+                            (
+                                record["pmid"],
+                                record["date_revised"],
+                                record["data"],
+                            )
+                        )
+            conn.commit()
 
     def process_deletions(self, pmid_list: List[int]) -> None:
         raise NotImplementedError
