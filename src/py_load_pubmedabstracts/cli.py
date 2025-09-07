@@ -2,8 +2,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .db.postgresql import PostgresAdapter
 from .config import Settings
+from .db.factory import get_adapter
 from .ftp_client import NLMFTPClient
 
 app = typer.Typer()
@@ -18,14 +18,10 @@ def initialize_db() -> None:
     settings = Settings()
     console.print("Initializing database...")
     try:
-        if settings.db_adapter == "postgresql":
-            adapter = PostgresAdapter(dsn=settings.db_connection_string)
-            adapter.initialize_schema(mode=settings.load_mode)
-            console.print("[bold green]Database initialized successfully.[/bold green]")
-        else:
-            console.print(f"[bold red]Error: Unsupported database adapter '{settings.db_adapter}'.[/bold red]")
-            raise typer.Exit(code=1)
-    except Exception as e:
+        adapter = get_adapter(adapter_name=settings.db_adapter, dsn=settings.db_connection_string)
+        adapter.initialize_schema(mode=settings.load_mode)
+        console.print("[bold green]Database initialized successfully.[/bold green]")
+    except (ValueError, Exception) as e:
         console.print(f"[bold red]Error initializing database: {e}[/bold red]")
         raise typer.Exit(code=1)
 
@@ -96,12 +92,9 @@ def check_status() -> None:
     """
     settings = Settings()
     console.print(f"Checking status using adapter '{settings.db_adapter}'...")
-    if settings.db_adapter != "postgresql":
-        console.print(f"[bold red]Error: Unsupported database adapter '{settings.db_adapter}'.[/bold red]")
-        raise typer.Exit(code=1)
 
     try:
-        adapter = PostgresAdapter(dsn=settings.db_connection_string)
+        adapter = get_adapter(adapter_name=settings.db_adapter, dsn=settings.db_connection_string)
         completed_files = adapter.get_completed_files()
 
         table = Table("Completed Files")
@@ -136,11 +129,12 @@ def run_baseline(
     if initial_load:
         console.print("[yellow]--initial-load flag set. Will optimize for an empty database.[/yellow]")
 
-    if settings.db_adapter != "postgresql":
-        console.print(f"[bold red]Error: This command currently only supports the 'postgresql' adapter.[/bold red]")
+    try:
+        adapter = get_adapter(adapter_name=settings.db_adapter, dsn=settings.db_connection_string)
+    except ValueError as e:
+        console.print(f"[bold red]Error: {e}[/bold red]")
         raise typer.Exit(code=1)
 
-    adapter = PostgresAdapter(dsn=settings.db_connection_string)
     client = NLMFTPClient()
 
     try:
