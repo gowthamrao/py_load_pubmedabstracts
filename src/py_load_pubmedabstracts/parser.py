@@ -41,7 +41,9 @@ def _construct_date(
     }
     month = month_map.get(month, month)
     try:
-        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+        # Use datetime to validate the date components
+        dt = datetime.date(int(year), int(month), int(day))
+        return dt.isoformat()
     except (ValueError, TypeError):
         return None
 
