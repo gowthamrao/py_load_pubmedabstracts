@@ -1,16 +1,15 @@
+"""Logging configuration for the application."""
 import json
 import logging
-from typing import Any
+from typing import Any, Dict
 
 
 class JSONFormatter(logging.Formatter):
-    """
-    Formats log records as JSON strings.
-    """
+    """Formats log records as JSON strings."""
 
     def format(self, record: logging.LogRecord) -> str:
         """
-        Formats a log record into a JSON string.
+        Format a log record into a JSON string.
 
         The formatter includes a default set of attributes from the LogRecord,
         plus any extra attributes passed to the logger.
@@ -43,7 +42,7 @@ class JSONFormatter(logging.Formatter):
 
 def configure_logging() -> None:
     """
-    Configures the root logger for the application.
+    Configure the root logger for the application.
 
     It sets the logging level to INFO and adds a stream handler
     that uses the JSONFormatter to output logs to standard out.

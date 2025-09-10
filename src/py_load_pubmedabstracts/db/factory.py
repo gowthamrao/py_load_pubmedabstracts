@@ -1,3 +1,4 @@
+"""Factory for creating database adapters."""
 import sys
 from typing import TYPE_CHECKING
 
@@ -14,17 +15,18 @@ ADAPTER_GROUP = "py_load_pubmedabstracts.database_adapters"
 
 def get_adapter(adapter_name: str, dsn: str) -> "DatabaseAdapter":
     """
-    Dynamically discovers and loads a DatabaseAdapter plugin.
+    Dynamically discover and load a DatabaseAdapter plugin.
 
     Args:
         adapter_name: The name of the adapter to load (e.g., 'postgresql').
-        dsn: The database connection string to pass to the adapter's constructor.
+        dsn: The database connection string for the adapter's constructor.
 
     Returns:
         An initialized instance of the requested DatabaseAdapter.
 
     Raises:
         ValueError: If the requested adapter is not found.
+
     """
     discovered_plugins = entry_points(group=ADAPTER_GROUP)
 

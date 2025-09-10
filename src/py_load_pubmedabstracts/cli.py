@@ -1,3 +1,9 @@
+"""
+Command-line interface for the PubMed/MEDLINE ETL pipeline.
+
+This module provides commands to initialize the database, manage ETL processes,
+and check the status of data loads.
+"""
 import logging
 import os
 from typing import Optional
@@ -16,15 +22,13 @@ logger = logging.getLogger(__name__)
 
 @app.callback()
 def main():
-    """
-    Configure logging for all commands.
-    """
+    """Configure logging for all commands."""
     configure_logging()
 
 
 @app.command()
 def initialize_db() -> None:
-    """Initializes the database schema and state tracking tables."""
+    """Initialize the database schema and state tracking tables."""
     settings = Settings()
     logger.info("Initializing database.", extra={"mode": settings.load_mode})
     try:
@@ -38,19 +42,29 @@ def initialize_db() -> None:
 
 @app.command()
 def list_remote_files(
-    baseline: bool = typer.Option(True, "--baseline/--no-baseline", help="List baseline files."),
-    updates: bool = typer.Option(True, "--updates/--no-updates", help="List update files."),
+    baseline: bool = typer.Option(
+        True, "--baseline/--no-baseline", help="List baseline files."
+    ),
+    updates: bool = typer.Option(
+        True, "--updates/--no-updates", help="List update files."
+    ),
 ) -> None:
-    """Lists available baseline and/or daily update files from the NLM FTP server."""
+    """List available baseline and/or daily update files from the NLM FTP server."""
     client = NLMFTPClient()
     logger.info("Connecting to NLM FTP server to list files...")
     try:
         if baseline:
             baseline_files = client.list_baseline_files()
-            logger.info("Available baseline files.", extra={"count": len(baseline_files), "files": baseline_files})
+            logger.info(
+                "Available baseline files.",
+                extra={"count": len(baseline_files), "files": baseline_files},
+            )
         if updates:
             update_files = client.list_update_files()
-            logger.info("Available update files.", extra={"count": len(update_files), "files": update_files})
+            logger.info(
+                "Available update files.",
+                extra={"count": len(update_files), "files": update_files},
+            )
         logger.info("Successfully retrieved file lists.")
     except Exception as e:
         logger.exception("Error listing remote files.", exc_info=e)
@@ -59,7 +73,7 @@ def list_remote_files(
 
 @app.command()
 def check_status() -> None:
-    """Displays the current state of the loaded files from the load history table."""
+    """Display the current state of the loaded files from the load history table."""
     settings = Settings()
     logger.info("Checking load status.", extra={"adapter": settings.db_adapter})
     try:
@@ -79,7 +93,7 @@ def check_status() -> None:
 
 @app.command()
 def reset_failed() -> None:
-    """Resets the status of FAILED files in the state table for reprocessing."""
+    """Reset the status of FAILED files in the state table for reprocessing."""
     settings = Settings()
     logger.info("Connecting to the database to reset failed files...")
     try:
@@ -95,9 +109,12 @@ def reset_failed() -> None:
 
 
 def _get_files_to_process(client: NLMFTPClient, adapter, file_type: str) -> list:
-    """Helper to get the list of files that need to be processed."""
+    """Get the list of files that need to be processed."""
     logger.info(f"Fetching remote {file_type} file list...")
-    list_func = client.list_baseline_files if file_type == "baseline" else client.list_update_files
+    if file_type == "baseline":
+        list_func = client.list_baseline_files
+    else:
+        list_func = client.list_update_files
     remote_files = list_func()
 
     logger.info("Fetching list of completed files from the database...")
@@ -115,9 +132,12 @@ def run_baseline(
     initial_load: bool = typer.Option(False, help="Use optimizations for empty DB."),
     chunk_size: int = typer.Option(20000, help="Records per chunk."),
 ) -> None:
-    """Runs the full baseline load process."""
+    """Run the full baseline load process."""
     settings = Settings()
-    logger.info("Starting baseline load.", extra={"mode": settings.load_mode, "initial_load": initial_load})
+    logger.info(
+        "Starting baseline load.",
+        extra={"mode": settings.load_mode, "initial_load": initial_load},
+    )
 
     adapter = get_adapter(settings.db_adapter, settings.db_connection_string)
     client = NLMFTPClient()
@@ -161,7 +181,7 @@ def run_delta(
     limit: Optional[int] = typer.Option(None, "-l", help="Limit number of files."),
     chunk_size: int = typer.Option(20000, help="Records per chunk."),
 ) -> None:
-    """Runs the delta load process for daily update files."""
+    """Run the delta load process for daily update files."""
     settings = Settings()
     logger.info("Starting delta load.", extra={"mode": settings.load_mode})
 
@@ -196,7 +216,8 @@ def run_delta(
                 )
             except Exception as e:
                 logger.exception(
-                    f"Error processing {data_filename}. Aborting delta run to ensure sequential processing.",
+                    "Error processing %s. Aborting delta run.",
+                    data_filename,
                     exc_info=e,
                 )
                 raise typer.Exit(code=1)
@@ -207,8 +228,10 @@ def run_delta(
         raise typer.Exit(code=1)
 
 
-def _process_single_file(client, adapter, settings, file_info, file_type, chunk_size, is_initial_load):
-    """Helper function to process one file (baseline or delta)."""
+def _process_single_file(
+    client, adapter, settings, file_info, file_type, chunk_size, is_initial_load
+):
+    """Process one file (baseline or delta)."""
     data_filename, md5_filename = file_info
     local_path = ""
     total_records = 0
@@ -217,12 +240,17 @@ def _process_single_file(client, adapter, settings, file_info, file_type, chunk_
     try:
         logger.info("Processing file.", extra=log_extra)
 
-        remote_dir = client.BASELINE_DIR if file_type == "BASELINE" else client.UPDATE_DIR
+        remote_dir = (
+            client.BASELINE_DIR if file_type == "BASELINE" else client.UPDATE_DIR
+        )
         md5_checksum = client.get_remote_checksum(remote_dir, md5_filename)
         log_extra["md5_checksum"] = md5_checksum
 
         adapter.manage_load_state(
-            file_name=data_filename, status="DOWNLOADING", file_type=file_type, md5_checksum=md5_checksum
+            file_name=data_filename,
+            status="DOWNLOADING",
+            file_type=file_type,
+            md5_checksum=md5_checksum,
         )
         logger.info("Downloading and verifying file.", extra=log_extra)
         local_path = client.download_and_verify_file(
@@ -245,12 +273,18 @@ def _process_single_file(client, adapter, settings, file_info, file_type, chunk_
                 total_records += num_records
             elif op_type == "DELETE":
                 pmids_to_delete = chunk_data.get("pmids", [])
-                logger.info(f"Processing {len(pmids_to_delete)} deletions...", extra=log_extra)
-                adapter.process_deletions(pmid_list=pmids_to_delete, mode=settings.load_mode)
+                logger.info(
+                    "Processing %s deletions...", len(pmids_to_delete), extra=log_extra
+                )
+                adapter.process_deletions(
+                    pmid_list=pmids_to_delete, mode=settings.load_mode
+                )
                 total_records += len(pmids_to_delete)
 
         logger.info("Merging data into final tables...", extra=log_extra)
-        adapter.execute_merge_strategy(mode=settings.load_mode, is_initial_load=is_initial_load)
+        adapter.execute_merge_strategy(
+            mode=settings.load_mode, is_initial_load=is_initial_load
+        )
 
         adapter.manage_load_state(
             file_name=data_filename, status="COMPLETE", records_processed=total_records
@@ -260,7 +294,12 @@ def _process_single_file(client, adapter, settings, file_info, file_type, chunk_
 
     except Exception as e:
         adapter.manage_load_state(file_name=data_filename, status="FAILED")
-        logger.exception(f"Failed to process {data_filename}. Marked as FAILED.", exc_info=e, extra=log_extra)
+        logger.exception(
+            "Failed to process %s. Marked as FAILED.",
+            data_filename,
+            exc_info=e,
+            extra=log_extra,
+        )
         raise
 
     finally:
