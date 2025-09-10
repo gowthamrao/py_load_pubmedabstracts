@@ -1,9 +1,9 @@
 [tool.poetry]
-name = "py-load-pubmedabstracts"
+name = "py_load_pubmedabstracts"
 version = "0.1.0"
 description = "A high-performance ETL pipeline for PubMed/MEDLINE."
 authors = ["Gowtham Rao <rao@ohdsi.org>"]
-license = "MIT"
+license = "Apache-2.0"
 readme = "README.md"
 packages = [{include = "py_load_pubmedabstracts", from = "src"}]
 

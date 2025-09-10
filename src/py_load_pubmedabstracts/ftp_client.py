@@ -1,3 +1,4 @@
+"""FTP client for interacting with the NLM FTP server."""
 import ftplib
 import hashlib
 import os
@@ -7,16 +8,15 @@ from typing import Generator, List, Tuple
 
 
 class NLMFTPClient:
-    """
-    A client for interacting with the NLM FTP server (ftp.ncbi.nlm.nih.gov).
-    """
+    """A client for interacting with the NLM FTP server."""
+
     FTP_HOST = "ftp.ncbi.nlm.nih.gov"
     BASELINE_DIR = "/pubmed/baseline/"
     UPDATE_DIR = "/pubmed/updatefiles/"
 
     @contextmanager
     def _connect(self) -> Generator[ftplib.FTP, None, None]:
-        """A context manager to handle the FTP connection and anonymous login."""
+        """Handle the FTP connection and anonymous login."""
         ftp = ftplib.FTP(self.FTP_HOST, timeout=60)
         ftp.login()  # Anonymous login
         try:
@@ -24,8 +24,10 @@ class NLMFTPClient:
         finally:
             ftp.quit()
 
-    def _list_and_pair_files(self, ftp: ftplib.FTP, directory: str) -> List[Tuple[str, str]]:
-        """Helper to list and pair data and checksum files from a given directory."""
+    def _list_and_pair_files(
+        self, ftp: ftplib.FTP, directory: str
+    ) -> List[Tuple[str, str]]:
+        """List and pair data and checksum files from a given directory."""
         ftp.cwd(directory)
         all_files = set(ftp.nlst())
         data_files = sorted([f for f in all_files if f.endswith(".xml.gz")])
@@ -37,37 +39,38 @@ class NLMFTPClient:
         return paired_files
 
     def list_baseline_files(self) -> List[Tuple[str, str]]:
-        """Lists all .xml.gz files and their corresponding .md5 files in the baseline directory."""
+        """List all .xml.gz files and their .md5 files in the baseline directory."""
         with self._connect() as ftp:
             return self._list_and_pair_files(ftp, self.BASELINE_DIR)
 
     def list_update_files(self) -> List[Tuple[str, str]]:
-        """Lists all .xml.gz files and their corresponding .md5 files in the update files directory."""
+        """List all .xml.gz files and their .md5 files in the update directory."""
         with self._connect() as ftp:
             return self._list_and_pair_files(ftp, self.UPDATE_DIR)
 
     def _get_remote_checksum(self, ftp: ftplib.FTP, remote_md5_filename: str) -> str:
-        """Downloads the checksum file, parses it, and returns the checksum hash."""
+        """Download the checksum file, parse it, and return the checksum hash."""
         checksum_data = []
         ftp.retrbinary(f"RETR {remote_md5_filename}", checksum_data.append)
         checksum_line = b"".join(checksum_data).decode("utf-8")
-        # Expected format: MD5(filename.xml.gz)= checksum_hash
         checksum = checksum_line.split("= ")[1].strip()
         return checksum
 
     def get_remote_checksum(self, remote_dir: str, md5_filename: str) -> str:
-        """Connects to the FTP server and retrieves the checksum hash for a given file."""
+        """Connect to the FTP server and retrieve the checksum for a given file."""
         with self._connect() as ftp:
             ftp.cwd(remote_dir)
             return self._get_remote_checksum(ftp, md5_filename)
 
-    def _download_file(self, ftp: ftplib.FTP, remote_filename: str, local_path: str) -> None:
-        """Downloads a single file using FTP's binary transfer mode."""
+    def _download_file(
+        self, ftp: ftplib.FTP, remote_filename: str, local_path: str
+    ) -> None:
+        """Download a single file using FTP's binary transfer mode."""
         with open(local_path, "wb") as f:
             ftp.retrbinary(f"RETR {remote_filename}", f.write)
 
     def _calculate_local_checksum(self, local_path: str) -> str:
-        """Calculates the MD5 checksum of a local file in a memory-efficient way."""
+        """Calculate the MD5 checksum of a local file."""
         md5 = hashlib.md5()
         with open(local_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
@@ -75,23 +78,29 @@ class NLMFTPClient:
         return md5.hexdigest()
 
     def download_and_verify_file(
-        self, remote_dir: str, data_filename: str, md5_filename: str, local_staging_dir: str, max_retries: int = 3
+        self,
+        remote_dir: str,
+        data_filename: str,
+        md5_filename: str,
+        local_staging_dir: str,
+        max_retries: int = 3,
     ) -> str:
         """
-        Downloads a file, verifies its MD5 checksum, and retries on failure.
+        Download a file, verify its MD5 checksum, and retry on failure.
 
         Args:
-            remote_dir: The remote directory on the FTP server (e.g., BASELINE_DIR).
+            remote_dir: The remote directory on the FTP server.
             data_filename: The name of the .xml.gz file to download.
             md5_filename: The name of the corresponding .md5 file.
             local_staging_dir: The local directory to save the file to.
-            max_retries: The maximum number of times to retry the download if checksum fails.
+            max_retries: Max number of retries if checksum fails.
 
         Returns:
             The full path to the downloaded and verified local file.
 
         Raises:
-            Exception: If the file cannot be downloaded and verified after all retries.
+            Exception: If the file cannot be downloaded after all retries.
+
         """
         local_filepath = os.path.join(local_staging_dir, data_filename)
         os.makedirs(local_staging_dir, exist_ok=True)
@@ -101,10 +110,16 @@ class NLMFTPClient:
                 with self._connect() as ftp:
                     ftp.cwd(remote_dir)
 
-                    print(f"[{attempt+1}/{max_retries}] Getting remote checksum for {md5_filename}...")
+                    print(
+                        f"[{attempt+1}/{max_retries}] Getting remote checksum for "
+                        f"{md5_filename}..."
+                    )
                     expected_checksum = self._get_remote_checksum(ftp, md5_filename)
 
-                    print(f"[{attempt+1}/{max_retries}] Downloading {data_filename} to {local_filepath}...")
+                    print(
+                        f"[{attempt+1}/{max_retries}] Downloading {data_filename} "
+                        f"to {local_filepath}..."
+                    )
                     self._download_file(ftp, data_filename, local_filepath)
 
                 print(f"Verifying checksum for {local_filepath}...")
@@ -116,11 +131,15 @@ class NLMFTPClient:
                 else:
                     print(
                         f"Checksum MISMATCH for {data_filename}. "
-                        f"Expected: {expected_checksum}, Got: {local_checksum}. Retrying..."
+                        f"Expected: {expected_checksum}, Got: {local_checksum}. "
+                        "Retrying..."
                     )
             except Exception as e:
                 print(f"An error occurred on attempt {attempt + 1}: {e}. Retrying...")
 
-            time.sleep(2 ** attempt)  # Exponential backoff
+            time.sleep(2**attempt)  # Exponential backoff
 
-        raise Exception(f"Failed to download and verify {data_filename} after {max_retries} attempts.")
+        raise Exception(
+            f"Failed to download and verify {data_filename} after {max_retries} "
+            "attempts."
+        )

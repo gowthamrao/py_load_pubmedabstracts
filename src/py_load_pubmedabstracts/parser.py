@@ -1,5 +1,6 @@
-import gzip
+"""Iterative parser for PubMed XML files."""
 import datetime
+import gzip
 from collections import defaultdict
 from typing import Any, Dict, Generator, List, Tuple, Union
 
@@ -20,7 +21,7 @@ def _get_value(element: etree._Element, xpath: str, default: Any = None) -> Any:
 def _get_date_parts(
     element: etree._Element, base_xpath: str
 ) -> Tuple[str | None, str | None, str | None]:
-    """Extracts Year, Month, and Day from a date element."""
+    """Extract Year, Month, and Day from a date element."""
     year = _get_value(element, f"{base_xpath}/Year")
     month = _get_value(element, f"{base_xpath}/Month")
     day = _get_value(element, f"{base_xpath}/Day")
@@ -30,18 +31,27 @@ def _get_date_parts(
 def _construct_date(
     year: str | None, month: str | None, day: str | None
 ) -> str | None:
-    """Constructs an ISO 8601 date string, handling missing parts."""
+    """Construct an ISO 8601 date string, handling missing parts."""
     if not year:
         return None
     month = month or "01"
     day = day or "01"
     month_map = {
-        "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04", "May": "05", "Jun": "06",
-        "Jul": "07", "Aug": "08", "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
+        "Jan": "01",
+        "Feb": "02",
+        "Mar": "03",
+        "Apr": "04",
+        "May": "05",
+        "Jun": "06",
+        "Jul": "07",
+        "Aug": "08",
+        "Sep": "09",
+        "Oct": "10",
+        "Nov": "11",
+        "Dec": "12",
     }
     month = month_map.get(month, month)
     try:
-        # Use datetime to validate the date components
         dt = datetime.date(int(year), int(month), int(day))
         return dt.isoformat()
     except (ValueError, TypeError):
@@ -49,7 +59,8 @@ def _construct_date(
 
 
 def xml_to_dict(element: etree._Element) -> Dict[str, Any]:
-    """A simple conversion of an lxml Element to a dictionary."""
+    """Convert an lxml Element to a dictionary."""
+
     def _convert_node(node):
         result = {}
         if node.text and node.text.strip():
@@ -65,19 +76,17 @@ def xml_to_dict(element: etree._Element) -> Dict[str, Any]:
             else:
                 result[child.tag] = child_data
         return result
+
     return {element.tag: _convert_node(element)}
 
 
-def _parse_normalized(
-    elem: etree._Element, pmid: int
-) -> T_DataChunk:
+def _parse_normalized(elem: etree._Element, pmid: int) -> T_DataChunk:
     """
-    Parses a <MedlineCitation> element into a normalized, multi-table structure
-    using Pydantic models.
+    Parse a <MedlineCitation> element into a normalized structure.
+
+    This uses Pydantic models.
     """
     data: T_DataChunk = defaultdict(list)
-
-    # 1. Parse Journal
     journal_issn = _get_value(elem, "Article/Journal/ISSN")
     if journal_issn:
         data["journals"].append(
@@ -87,8 +96,6 @@ def _parse_normalized(
                 iso_abbreviation=_get_value(elem, "Article/Journal/ISOAbbreviation"),
             )
         )
-
-    # 2. Parse Citation
     pub_date_year, pub_date_month, pub_date_day = _get_date_parts(
         elem, "Article/Journal/JournalIssue/PubDate"
     )
@@ -97,23 +104,20 @@ def _parse_normalized(
             pmid=pmid,
             title=_get_value(elem, "Article/ArticleTitle"),
             abstract=_get_value(elem, "Article/Abstract/AbstractText"),
-            publication_date=_construct_date(pub_date_year, pub_date_month, pub_date_day),
+            publication_date=_construct_date(
+                pub_date_year, pub_date_month, pub_date_day
+            ),
             journal_issn=journal_issn,
         )
     )
-
-    # 3. Parse Authors
     author_list = elem.find("Article/AuthorList")
     if author_list is not None:
         for i, author_elem in enumerate(author_list.findall("Author")):
             last_name = _get_value(author_elem, "LastName")
-            if not last_name:  # Skip collective authors
+            if not last_name:
                 continue
-
             fore_name = _get_value(author_elem, "ForeName")
-            author_id_str = f"{last_name}-{fore_name}"
-            author_id = hash(author_id_str)
-
+            author_id = hash(f"{last_name}-{fore_name}")
             data["authors"].append(
                 models.Author(
                     author_id=author_id,
@@ -127,15 +131,12 @@ def _parse_normalized(
                     pmid=pmid, author_id=author_id, display_order=i + 1
                 )
             )
-
-    # 4. Parse MeSH Headings
     mesh_heading_list = elem.find("MeshHeadingList")
     if mesh_heading_list is not None:
         for mesh_elem in mesh_heading_list.findall("MeshHeading"):
             descriptor = mesh_elem.find("DescriptorName")
             if descriptor is not None and descriptor.text:
-                mesh_id_str = f"{descriptor.text}-{descriptor.get('UI')}"
-                mesh_id = hash(mesh_id_str)
+                mesh_id = hash(f"{descriptor.text}-{descriptor.get('UI')}")
                 data["mesh_terms"].append(
                     models.MeshTerm(
                         mesh_id=mesh_id,
@@ -149,13 +150,43 @@ def _parse_normalized(
     return data
 
 
+def _process_medline_citation(elem, load_mode, upsert_chunks):
+    """Process a MedlineCitation element."""
+    pmid_str = _get_value(elem, "PMID")
+    if not pmid_str:
+        return False
+    pmid = int(pmid_str)
+    if load_mode in ("FULL", "BOTH"):
+        revised_year, revised_month, revised_day = _get_date_parts(elem, "DateRevised")
+        upsert_chunks["citations_json"].append(
+            models.CitationJson(
+                pmid=pmid,
+                date_revised=_construct_date(revised_year, revised_month, revised_day),
+                data=xml_to_dict(elem),
+            )
+        )
+    if load_mode in ("NORMALIZED", "BOTH"):
+        normalized_data = _parse_normalized(elem, pmid)
+        for table, records in normalized_data.items():
+            upsert_chunks[table].extend(records)
+    return True
+
+
+def _process_delete_citation(elem, delete_chunk):
+    """Process a DeleteCitation element."""
+    pmids_to_delete = [
+        int(pmid.text) for pmid in elem.findall("PMID") if pmid.text
+    ]
+    delete_chunk.extend(pmids_to_delete)
+
+
 def parse_pubmed_xml(
     file_path: str,
     load_mode: str,
     chunk_size: int = 20000,
 ) -> Generator[Tuple[str, Union[T_DataChunk, Dict[str, List[int]]]], None, None]:
     """
-    Parses a gzipped PubMed XML file iteratively and yields chunks of operations.
+    Parse a gzipped PubMed XML file iteratively and yield chunks of operations.
 
     Args:
         file_path: Path to the `.xml.gz` file.
@@ -163,72 +194,34 @@ def parse_pubmed_xml(
         chunk_size: The number of records to include in each yielded chunk.
 
     Yields:
-        A tuple containing the operation type ('UPSERT' or 'DELETE') and a payload.
-        For 'UPSERT', the payload is a dictionary where keys are table names and
-        values are lists of records.
-        For 'DELETE', the payload is a list of PMIDs.
+        A tuple containing the operation type ('UPSERT' or 'DELETE') and payload.
+        For 'UPSERT', the payload is a dict where keys are table names and
+        values are lists of records. For 'DELETE', the payload is a list of PMIDs.
+
     """
-    # A dictionary to hold lists of records for different tables
     upsert_chunks: T_DataChunk = defaultdict(list)
     delete_chunk: List[int] = []
     record_count = 0
-
     with gzip.open(file_path, "rb") as f:
         context = etree.iterparse(
             f, events=("end",), tag=("MedlineCitation", "DeleteCitation")
         )
-
         for _, elem in context:
             if elem.tag == "MedlineCitation":
-                pmid_str = _get_value(elem, "PMID")
-                if not pmid_str:
-                    elem.clear()
-                    while elem.getprevious() is not None:
-                        del elem.getparent()[0]
-                    continue
-
-                pmid = int(pmid_str)
-
-                # 'FULL' or 'BOTH' mode processing
-                if load_mode in ("FULL", "BOTH"):
-                    revised_year, revised_month, revised_day = _get_date_parts(
-                        elem, "DateRevised"
-                    )
-                    upsert_chunks["citations_json"].append(
-                        models.CitationJson(
-                            pmid=pmid,
-                            date_revised=_construct_date(
-                                revised_year, revised_month, revised_day
-                            ),
-                            data=xml_to_dict(elem),
-                        )
-                    )
-
-                # 'NORMALIZED' or 'BOTH' mode processing
-                if load_mode in ("NORMALIZED", "BOTH"):
-                    normalized_data = _parse_normalized(elem, pmid)
-                    for table, records in normalized_data.items():
-                        upsert_chunks[table].extend(records)
-
-                record_count += 1
-                if record_count >= chunk_size:
-                    yield "UPSERT", upsert_chunks
-                    upsert_chunks = defaultdict(list)
-                    record_count = 0
-
+                if _process_medline_citation(elem, load_mode, upsert_chunks):
+                    record_count += 1
+                    if record_count >= chunk_size:
+                        yield "UPSERT", upsert_chunks
+                        upsert_chunks = defaultdict(list)
+                        record_count = 0
             elif elem.tag == "DeleteCitation":
-                pmids_to_delete = [
-                    int(pmid.text) for pmid in elem.findall("PMID") if pmid.text
-                ]
-                delete_chunk.extend(pmids_to_delete)
+                _process_delete_citation(elem, delete_chunk)
                 if len(delete_chunk) >= chunk_size:
                     yield "DELETE", {"pmids": delete_chunk}
                     delete_chunk = []
-
             elem.clear()
             while elem.getprevious() is not None:
                 del elem.getparent()[0]
-
     if any(upsert_chunks.values()):
         yield "UPSERT", upsert_chunks
     if delete_chunk:
