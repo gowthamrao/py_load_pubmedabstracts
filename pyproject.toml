@@ -1,0 +1,62 @@
+[tool.poetry]
+name = "py_load_pubmedabstracts"
+version = "0.1.0"
+description = "A high-performance ETL pipeline for PubMed/MEDLINE."
+authors = ["Gowtham Rao <rao@ohdsi.org>"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = [{include = "py_load_pubmedabstracts", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+typer = "^0.17.4"
+pydantic = "^2.11.7"
+pydantic-settings = "^2.10.1"
+psycopg = { extras = ["binary"], version = "^3.2.9" }
+lxml = "^6.0.1"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.2"
+pytest-cov = "^6.3.0"
+ruff = "^0.12.12"
+mypy = "^1.17.1"
+testcontainers = "^4.12.0"
+psycopg-binary = "^3.2.9"
+pytest-mock = "^3.15.0"
+
+
+[tool.poetry.scripts]
+py-load-pubmedabstracts = "py_load_pubmedabstracts.cli:app"
+
+[tool.poetry.plugins."py_load_pubmedabstracts.database_adapters"]
+"postgresql" = "py_load_pubmedabstracts.db.postgresql:PostgresAdapter"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration tests (requires docker)",
+]
+
+# Ruff configuration
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "I", "W", "C90", "N", "D"]
+# D203: 1 blank line required before class docstring (conflict with black)
+# D212: Multi-line docstring summary should start at the first line (conflict with black)
+ignore = ["D203", "D212"]
+
+[tool.ruff.mccabe]
+max-complexity = 10
+
+# Mypy configuration
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+# This is needed because of how typer and other libraries use decorators
+disallow_untyped_decorators = false
+# Point to the source directory
+mypy_path = "src"
