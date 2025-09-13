@@ -113,17 +113,25 @@ def _parse_normalized(elem: etree._Element, pmid: int) -> T_DataChunk:
     author_list = elem.find("Article/AuthorList")
     if author_list is not None:
         for i, author_elem in enumerate(author_list.findall("Author")):
-            last_name = _get_value(author_elem, "LastName")
-            if not last_name:
-                continue
-            fore_name = _get_value(author_elem, "ForeName")
+            collective_name = _get_value(author_elem, "CollectiveName")
+            if collective_name:
+                last_name = collective_name
+                fore_name = None
+                initials = None
+            else:
+                last_name = _get_value(author_elem, "LastName")
+                if not last_name:
+                    continue  # Skip if there's no last name or collective name
+                fore_name = _get_value(author_elem, "ForeName")
+                initials = _get_value(author_elem, "Initials")
+
             author_id = hash(f"{last_name}-{fore_name}")
             data["authors"].append(
                 models.Author(
                     author_id=author_id,
                     last_name=last_name,
                     fore_name=fore_name,
-                    initials=_get_value(author_elem, "Initials"),
+                    initials=initials,
                 )
             )
             data["citation_authors"].append(
