@@ -42,8 +42,11 @@ def setup_db_for_delta(db_conn_str: str, request):
     yield db_conn_str, load_mode
 
 
+import logging
+
+
 @pytest.mark.parametrize("setup_db_for_delta", ["FULL", "NORMALIZED"], indirect=True)
-def test_run_delta_end_to_end(setup_db_for_delta, mocker, tmp_path):
+def test_run_delta_end_to_end(setup_db_for_delta, mocker, tmp_path, caplog):
     """Tests the full delta load process for both FULL and NORMALIZED modes."""
     db_conn_str, load_mode = setup_db_for_delta
     runner = CliRunner()
@@ -65,17 +68,18 @@ def test_run_delta_end_to_end(setup_db_for_delta, mocker, tmp_path):
     mocker.patch("py_load_pubmedabstracts.cli.NLMFTPClient.download_and_verify_file", return_value=str(sample_gz_path))
     mocker.patch("py_load_pubmedabstracts.cli.NLMFTPClient.get_remote_checksum", return_value="dummy")
 
-    result = runner.invoke(
-        app, ["run-delta"],
-        env={
-            "PML_DB_CONNECTION_STRING": db_conn_str,
-            "PML_LOAD_MODE": load_mode,
-            "PML_LOCAL_STAGING_DIR": str(tmp_path),
-        },
-    )
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(
+            app, ["run-delta"],
+            env={
+                "PML_DB_CONNECTION_STRING": db_conn_str,
+                "PML_LOAD_MODE": load_mode,
+                "PML_LOCAL_STAGING_DIR": str(tmp_path),
+            },
+        )
 
-    assert result.exit_code == 0, result.stdout
-    assert "Delta run finished" in result.stdout
+        assert result.exit_code == 0, result.stdout
+        assert "Delta run finished" in caplog.text
 
     with psycopg.connect(db_conn_str) as conn, conn.cursor() as cur:
         if load_mode == "FULL":

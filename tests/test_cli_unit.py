@@ -159,3 +159,155 @@ def test_process_single_file_failure(mocker, mock_settings, mock_adapter, mock_f
     assert "Critical error during baseline run" in caplog.text
     mock_adapter.manage_load_state.assert_any_call(file_name='file1.xml.gz', status='FAILED')
     mock_remove.assert_not_called()
+
+
+def test_list_remote_files_failure(mock_ftp_client, caplog):
+    """Tests exception handling for list-remote-files."""
+    mock_ftp_client.list_baseline_files.side_effect = Exception("FTP Error")
+    with caplog.at_level(logging.ERROR):
+        result = runner.invoke(app, ["list-remote-files"])
+        assert result.exit_code == 1
+        assert "Error listing remote files" in caplog.text
+
+
+def test_list_remote_files_no_baseline(mock_ftp_client, caplog):
+    """Tests list-remote-files with --no-baseline."""
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["list-remote-files", "--no-baseline"])
+        assert result.exit_code == 0
+        mock_ftp_client.list_baseline_files.assert_not_called()
+        mock_ftp_client.list_update_files.assert_called_once()
+
+
+def test_list_remote_files_no_updates(mock_ftp_client, caplog):
+    """Tests list-remote-files with --no-updates."""
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["list-remote-files", "--no-updates"])
+        assert result.exit_code == 0
+        mock_ftp_client.list_baseline_files.assert_called_once()
+        mock_ftp_client.list_update_files.assert_not_called()
+
+
+def test_check_status_failure(mock_settings, mock_adapter, caplog):
+    """Tests exception handling for check-status."""
+    mock_adapter.get_completed_files.side_effect = Exception("DB Error")
+    with caplog.at_level(logging.ERROR):
+        result = runner.invoke(app, ["check-status"])
+        assert result.exit_code == 1
+        assert "Error checking status" in caplog.text
+
+
+def test_check_status_no_files(mock_settings, mock_adapter, caplog):
+    """Tests check-status with no completed files."""
+    mock_adapter.get_completed_files.return_value = []
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["check-status"])
+        assert result.exit_code == 0
+        assert "No files have been successfully processed yet" in caplog.text
+
+
+def test_reset_failed_failure(mock_settings, mock_adapter, caplog):
+    """Tests exception handling for reset-failed."""
+    mock_adapter.reset_failed_files.side_effect = Exception("DB Error")
+    with caplog.at_level(logging.ERROR):
+        result = runner.invoke(app, ["reset-failed"])
+        assert result.exit_code == 1
+        assert "Error resetting failed files" in caplog.text
+
+
+def test_reset_failed_no_files(mock_settings, mock_adapter, caplog):
+    """Tests reset-failed with no files to reset."""
+    mock_adapter.reset_failed_files.return_value = 0
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["reset-failed"])
+        assert result.exit_code == 0
+        assert "No failed files found to reset" in caplog.text
+
+
+def test_run_baseline_limit(mock_settings, mock_adapter, mock_ftp_client, mocker, caplog):
+    """Tests the --limit option for run-baseline."""
+    mocker.patch("py_load_pubmedabstracts.cli._process_single_file")
+    mock_ftp_client.list_baseline_files.return_value = [
+        ("file1.xml.gz", "md5"),
+        ("file2.xml.gz", "md5"),
+    ]
+    mock_adapter.get_completed_files.return_value = set()
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["run-baseline", "-l", "1"])
+        assert result.exit_code == 0
+        assert "Processing a maximum of 1 file(s)." in caplog.text
+
+
+def test_run_baseline_initial_load(mock_settings, mock_adapter, mock_ftp_client, mocker):
+    """Tests the --initial-load option for run-baseline."""
+    mock_process_single = mocker.patch("py_load_pubmedabstracts.cli._process_single_file")
+    mock_ftp_client.list_baseline_files.return_value = [("file1.xml.gz", "md5")]
+    mock_adapter.get_completed_files.return_value = set()
+    result = runner.invoke(app, ["run-baseline", "--initial-load"])
+    assert result.exit_code == 0
+    mock_adapter.optimize_database.assert_has_calls([
+        call(stage="pre-load", mode="BOTH"),
+        call(stage="post-load", mode="BOTH"),
+    ])
+    mock_process_single.assert_called_with(
+        client=mock_ftp_client,
+        adapter=mock_adapter,
+        settings=mock_settings,
+        file_info=('file1.xml.gz', 'md5'),
+        file_type='BASELINE',
+        chunk_size=20000,
+        is_initial_load=True
+    )
+
+
+def test_run_delta_limit(mock_settings, mock_adapter, mock_ftp_client, mocker, caplog):
+    """Tests the --limit option for run-delta."""
+    mocker.patch("py_load_pubmedabstracts.cli._process_single_file")
+    mock_adapter.has_completed_baseline.return_value = True
+    mock_ftp_client.list_update_files.return_value = [
+        ("file1.xml.gz", "md5"),
+        ("file2.xml.gz", "md5"),
+    ]
+    mock_adapter.get_completed_files.return_value = set()
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["run-delta", "-l", "1"])
+        assert result.exit_code == 0
+        assert "Processing a maximum of 1 file(s)." in caplog.text
+
+
+def test_run_delta_no_new_files(mock_settings, mock_adapter, mock_ftp_client, caplog):
+    """Tests run-delta when no new files are available."""
+    mock_adapter.has_completed_baseline.return_value = True
+    mock_ftp_client.list_update_files.return_value = [("file1.xml.gz", "md5")]
+    mock_adapter.get_completed_files.return_value = {"file1.xml.gz"}
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["run-delta"])
+        assert result.exit_code == 0
+        assert "No new update files to process" in caplog.text
+
+
+def test_run_delta_processing_error(mock_settings, mock_adapter, mock_ftp_client, mocker, caplog):
+    """Tests when an error occurs during file processing in run-delta."""
+    mock_process_single = mocker.patch("py_load_pubmedabstracts.cli._process_single_file", side_effect=Exception("Processing Error"))
+    mock_adapter.has_completed_baseline.return_value = True
+    mock_ftp_client.list_update_files.return_value = [("file1.xml.gz", "md5")]
+    mock_adapter.get_completed_files.return_value = set()
+    with caplog.at_level(logging.ERROR):
+        result = runner.invoke(app, ["run-delta"])
+        assert result.exit_code == 1
+        assert "Error processing file1.xml.gz. Aborting delta run." in caplog.text
+
+
+def test_process_single_file_cleanup(mocker, mock_settings, mock_adapter, mock_ftp_client):
+    """Tests that the local file is cleaned up even if processing fails after download."""
+    mocker.patch("os.path.exists", return_value=True)
+    mock_remove = mocker.patch("os.remove")
+    mock_ftp_client.download_and_verify_file.return_value = "/tmp/file1.xml.gz"
+    mocker.patch("py_load_pubmedabstracts.cli.parse_pubmed_xml", side_effect=Exception("Parsing Error"))
+    mock_ftp_client.list_baseline_files.return_value = [("file1.xml.gz", "md5")]
+    mock_adapter.get_completed_files.return_value = set()
+
+    result = runner.invoke(app, ["run-baseline"])
+
+    assert result.exit_code == 1
+    mock_remove.assert_called_once_with("/tmp/file1.xml.gz")

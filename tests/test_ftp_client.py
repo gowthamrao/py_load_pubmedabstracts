@@ -125,3 +125,53 @@ def test_download_and_verify_file_fails_after_all_retries(mock_ftp_client, mocke
             max_retries=3
         )
     assert mock_ftp.retrbinary.call_count == 6
+
+
+def test_connect_finalizer(mocker):
+    """Tests that ftp.quit() is called even if an exception occurs."""
+    mock_ftp_instance = MagicMock(spec=ftplib.FTP)
+    mocker.patch("ftplib.FTP", return_value=mock_ftp_instance)
+    client = NLMFTPClient()
+
+    with pytest.raises(Exception, match="Test Exception"):
+        with client._connect():
+            raise Exception("Test Exception")
+
+    mock_ftp_instance.quit.assert_called_once()
+
+
+def test_download_and_verify_file_download_error(mock_ftp_client, mocker):
+    """Tests that an exception during download triggers a retry."""
+    client, mock_ftp = mock_ftp_client
+
+    correct_checksum = "iamcorrect"
+    fake_checksum_line = f"MD5(test.xml.gz)= {correct_checksum}".encode("utf-8")
+
+    failed_once = False
+    def retrbinary_side_effect(command, callback):
+        nonlocal failed_once
+        if ".md5" in command:
+            callback(fake_checksum_line)
+        else:
+            # Simulate a download error on the first attempt
+            if not failed_once:
+                failed_once = True
+                raise ftplib.error_perm("550 File not found")
+            pass
+
+    mock_ftp.retrbinary.side_effect = retrbinary_side_effect
+    mocker.patch("builtins.open", mock_open())
+    mocker.patch("time.sleep")
+    m_calc_checksum = mocker.patch.object(client, '_calculate_local_checksum', return_value=correct_checksum)
+
+    client.download_and_verify_file(
+        remote_dir=client.BASELINE_DIR,
+        data_filename="test.xml.gz",
+        md5_filename="test.xml.gz.md5",
+        local_staging_dir="/tmp/staging",
+        max_retries=2
+    )
+
+    # 1 for checksum, 1 for failed download, 1 for checksum, 1 for successful download
+    assert mock_ftp.retrbinary.call_count == 4
+    assert m_calc_checksum.call_count == 1
