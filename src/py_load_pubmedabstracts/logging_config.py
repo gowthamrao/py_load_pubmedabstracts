@@ -23,11 +23,19 @@ class JSONFormatter(logging.Formatter):
         }
 
         # Add any extra fields passed to the logger
+        # These are the standard attributes of a LogRecord. We want to exclude them
+        # from the 'extra' fields.
+        standard_attributes = {
+            "args", "asctime", "created", "exc_info", "exc_text", "filename",
+            "funcName", "levelname", "levelno", "lineno", "module", "msecs",
+            "message", "msg", "name", "pathname", "process", "processName",
+            "relativeCreated", "stack_info", "thread", "threadName",
+        }
         if hasattr(record, "__dict__"):
             extra_items = {
                 key: value
                 for key, value in record.__dict__.items()
-                if key not in logging.LogRecord.__slots__ and key not in log_object
+                if key not in standard_attributes and key not in log_object
             }
             log_object.update(extra_items)
 

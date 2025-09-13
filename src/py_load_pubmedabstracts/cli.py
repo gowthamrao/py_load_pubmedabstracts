@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 @app.callback()
 def main():
     """Configure logging for all commands."""
-    configure_logging()
+    # In a test environment, the logger might already be configured by pytest's
+    # caplog fixture. We don't want to overwrite that.
+    if not logging.getLogger().hasHandlers():
+        configure_logging()
 
 
 @app.command()
