@@ -11,7 +11,7 @@ def postgres_container() -> PostgresContainer:
     try:
         # The 'with' statement ensures the container is stopped and removed
         # even if tests fail, which is robust.
-        with PostgresContainer("postgres:16-alpine") as container:
+        with PostgresContainer("public.ecr.aws/docker/library/postgres:16-alpine") as container:
             yield container
     except Exception as e:
         pytest.skip(f"Skipping integration tests: Docker not available. Error: {e}")

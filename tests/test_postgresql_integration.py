@@ -38,11 +38,15 @@ def fake_gzipped_xml_file(tmp_path: Path) -> Path:
 
 # --- Tests ---
 
+import logging
+
+
 def test_run_baseline_end_to_end(
     db_conn_str: str,
     mocker,
     fake_gzipped_xml_file: Path,
-    tmp_path: Path
+    tmp_path: Path,
+    caplog,
 ):
     """
     Tests the full end-to-end `run-baseline` command for the FULL load mode.
@@ -61,24 +65,25 @@ def test_run_baseline_end_to_end(
         "PML_LOCAL_STAGING_DIR": str(tmp_path),
     }
 
-    # 1. Initialize and run the baseline
-    init_result = runner.invoke(app, ["initialize-db"], env=env)
-    assert init_result.exit_code == 0
+    with caplog.at_level(logging.INFO):
+        # 1. Initialize and run the baseline
+        init_result = runner.invoke(app, ["initialize-db"], env=env)
+        assert init_result.exit_code == 0
 
-    run_result = runner.invoke(app, ["run-baseline"], env=env)
-    assert run_result.exit_code == 0, run_result.stdout
-    assert "Found 1 new baseline files." in run_result.stdout
-    assert "Successfully processed pubmed23n0001.xml.gz" in run_result.stdout
+        run_result = runner.invoke(app, ["run-baseline"], env=env)
+        assert run_result.exit_code == 0, run_result.stdout
+        assert "Found 1 new baseline files to process." in caplog.text
+        assert "Successfully processed file." in caplog.text
 
-    # 2. Verify the database state
-    with psycopg.connect(db_conn_str) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM citations_json;")
-            assert cur.fetchone()[0] == 2
-            cur.execute("SELECT status FROM _pubmed_load_history WHERE file_name = 'pubmed23n0001.xml.gz'")
-            assert cur.fetchone()[0] == "COMPLETE"
+        # 2. Verify the database state
+        with psycopg.connect(db_conn_str) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM citations_json;")
+                assert cur.fetchone()[0] == 2
+                cur.execute("SELECT status FROM _pubmed_load_history WHERE file_name = 'pubmed23n0001.xml.gz'")
+                assert cur.fetchone()[0] == "COMPLETE"
 
-    # 3. Run baseline again to test idempotency
-    idempotency_result = runner.invoke(app, ["run-baseline"], env=env)
-    assert idempotency_result.exit_code == 0
-    assert "No new baseline files to process" in idempotency_result.stdout
+        # 3. Run baseline again to test idempotency
+        idempotency_result = runner.invoke(app, ["run-baseline"], env=env)
+        assert idempotency_result.exit_code == 0
+        assert "No new baseline files to process" in caplog.text
