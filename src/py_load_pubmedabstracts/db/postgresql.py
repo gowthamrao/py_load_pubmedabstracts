@@ -263,39 +263,49 @@ class PostgresAdapter(DatabaseAdapter):
         with self._get_connection() as conn:
             with conn.cursor() as cur:
                 now = datetime.now(timezone.utc)
-                if status == "DOWNLOADING":
-                    query = sql.SQL(
-                        """
-                        INSERT INTO _pubmed_load_history (
-                            file_name, file_type, md5_checksum,
-                            download_timestamp, status
-                        )
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (file_name) DO UPDATE SET
-                            status = EXCLUDED.status,
-                            download_timestamp = EXCLUDED.download_timestamp;
+
+                # Ensure a record exists. If not, create one with PENDING status.
+                # This is important for subsequent updates.
+                insert_query = sql.SQL(
                     """
-                    )
-                    cur.execute(
-                        query, [file_name, file_type, md5_checksum, now, status]
-                    )
-                else:
-                    set_clauses = [sql.SQL("status = %s")]
-                    params = [status]
-                    if status == "LOADING":
-                        set_clauses.append(sql.SQL("load_start_timestamp = %s"))
-                        params.append(now)
-                    if status in ("COMPLETE", "FAILED"):
-                        set_clauses.append(sql.SQL("load_end_timestamp = %s"))
-                        params.append(now)
-                    if status == "COMPLETE":
-                        set_clauses.append(sql.SQL("records_processed = %s"))
-                        params.append(records_processed)
-                    params.append(file_name)
-                    query = sql.SQL(
-                        "UPDATE _pubmed_load_history SET {} WHERE file_name = %s"
-                    ).format(sql.SQL(", ").join(set_clauses))
-                    cur.execute(query, params)
+                    INSERT INTO _pubmed_load_history (file_name, file_type, status)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (file_name) DO NOTHING;
+                """
+                )
+                # Use a placeholder for file_type if not provided
+                # to avoid issues with ON CONFLICT
+                effective_file_type = file_type or "UNKNOWN"
+                cur.execute(insert_query, [file_name, effective_file_type, "PENDING"])
+
+                # Now, update the record with the new status and details
+                set_clauses = [sql.SQL("status = %s")]
+                params = [status]
+
+                if file_type is not None:
+                    set_clauses.append(sql.SQL("file_type = %s"))
+                    params.append(file_type)
+                if md5_checksum is not None:
+                    set_clauses.append(sql.SQL("md5_checksum = %s"))
+                    params.append(md5_checksum)
+                if status == "DOWNLOADING":
+                    set_clauses.append(sql.SQL("download_timestamp = %s"))
+                    params.append(now)
+                if status == "LOADING":
+                    set_clauses.append(sql.SQL("load_start_timestamp = %s"))
+                    params.append(now)
+                if status in ("COMPLETE", "FAILED"):
+                    set_clauses.append(sql.SQL("load_end_timestamp = %s"))
+                    params.append(now)
+                if records_processed is not None:
+                    set_clauses.append(sql.SQL("records_processed = %s"))
+                    params.append(records_processed)
+
+                params.append(file_name)
+                update_query = sql.SQL(
+                    "UPDATE _pubmed_load_history SET {} WHERE file_name = %s"
+                ).format(sql.SQL(", ").join(set_clauses))
+                cur.execute(update_query, params)
             conn.commit()
 
     def optimize_database(self, stage: str, mode: str) -> None:
@@ -344,6 +354,7 @@ class PostgresAdapter(DatabaseAdapter):
                     "UPDATE _pubmed_load_history "
                     "SET status = 'PENDING' WHERE status = 'FAILED'"
                 )
+                conn.commit()
                 return cur.rowcount
 
     def get_completed_files(self) -> List[str]:
