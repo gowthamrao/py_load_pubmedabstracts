@@ -1,11 +1,12 @@
 import ftplib
-import hashlib
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, mock_open
 
 import pytest
 
 from py_load_pubmedabstracts.ftp_client import NLMFTPClient
+
 
 @pytest.fixture
 def mock_ftp_client(mocker):
@@ -62,7 +63,7 @@ def test_download_and_verify_file_success(mock_ftp_client, mocker):
         local_staging_dir="/tmp/staging"
     )
 
-    assert local_path == "/tmp/staging/test.xml.gz"
+    assert Path(local_path) == Path("/tmp/staging/test.xml.gz")
     assert client._calculate_local_checksum.call_count == 1
     assert mock_ftp.retrbinary.call_count == 2 # Once for checksum, once for data
 
