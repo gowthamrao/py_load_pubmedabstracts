@@ -7,8 +7,36 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  test:
+  unit-tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Poetry
+      run: |
+        pip install poetry
+        poetry config virtualenvs.create false
+
+    - name: Install dependencies
+      run: poetry install
+
+    - name: Run unit tests
+      run: poetry run pytest -m "not integration"
+
+  integration-tests:
     runs-on: ubuntu-latest
+    needs: unit-tests
     strategy:
       matrix:
         python-version: ['3.10']
@@ -43,9 +71,6 @@ jobs:
 
     - name: Install dependencies
       run: poetry install
-
-    - name: Run unit tests
-      run: poetry run pytest -m "not integration"
 
     - name: Run integration tests
       env:
